@@ -250,18 +250,19 @@
             // Show appropriate content
             if (userApprovalStatus === 'Approved') {
                 boardSection.classList.remove('hidden');
-                // listenToBoard() is now called either in checkAndHandleUserApproval 
-                // or after the initial load, to prevent duplicate listeners
-                if (!unsubscribeBoard) {
-                   listenToBoard();
-                }
+                
+                // ** UPDATED FIX: Ensure any loading/pending status text is cleared 
+                // and the board listener is explicitly started every time we transition to Approved.
+                document.getElementById('pending-status-text').textContent = 'Approved'; 
+                listenToBoard(); // Always call listenToBoard when approved
 
                 if (isUserAdmin && adminPanel) adminPanel.classList.remove('hidden');
 
             } else if (userApprovalStatus === 'Pending' || userApprovalStatus === 'Loading...') {
                 pendingSection.classList.remove('hidden');
                 document.getElementById('pending-status-text').textContent = userApprovalStatus;
-                // Only clear the board listener, keep the individual status listener if set
+                
+                // Clear all other listeners when stuck on Pending/Loading
                 if (unsubscribeBoard) {
                     unsubscribeBoard();
                     unsubscribeBoard = null;
@@ -333,6 +334,7 @@
 
             try {
                 const docRef = doc(db, USER_PERMISSIONS_PATH, userId);
+                // Note: The onSnapshot listener in the client app will pick up this change instantly.
                 await updateDoc(docRef, { status: 'Approved', approvalTimestamp: Date.now() });
                 showStatus(`User ${userId} approved successfully!`, 'text-green-600');
             } catch (e) {
@@ -427,7 +429,6 @@
         
         /**
          * ADMIN function to update the status of a request.
-         * ... (rest of function remains the same)
          */
         window.updateEntryStatus = async (docId, newStatus) => {
             if (currentUserId !== ADMIN_UID) {
@@ -450,7 +451,6 @@
 
         /**
          * Handles the deletion of a board entry. (Admin only via UI)
-         * ... (rest of function remains the same)
          */
         window.deleteEntry = async (docId) => {
             if (currentUserId !== ADMIN_UID) {
@@ -469,7 +469,6 @@
 
         /**
          * Returns Tailwind CSS classes for a given status.
-         * ... (rest of function remains the same)
          */
         function getStatusClasses(status) {
             switch (status) {
@@ -486,7 +485,6 @@
 
         /**
          * Renders the board entries from the snapshot.
-         * ... (rest of function remains the same)
          */
         function renderBoard(data) {
             const boardContainer = document.getElementById('board-container');
@@ -561,7 +559,6 @@
 
         /**
          * Sets up the real-time listener for the public board.
-         * ... (rest of function remains the same)
          */
         function listenToBoard() {
             if (unsubscribeBoard) {
