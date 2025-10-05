@@ -28,7 +28,8 @@
     <!-- Firebase SDKs -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, GoogleAuthProvider, signInWithRedirect, onAuthStateChanged, signInWithCustomToken, signOut, getRedirectResult } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        // REMOVED: GoogleAuthProvider, signInWithRedirect, getRedirectResult
+        import { getAuth, onAuthStateChanged, signInWithCustomToken, signOut, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, addDoc, onSnapshot, query, orderBy, deleteDoc, doc, updateDoc, setLogLevel, getDoc, setDoc, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // IMPORTANT: Configuration is now set!
@@ -60,17 +61,17 @@
         
         // Firestore Paths
         const BOARD_PATH = `/artifacts/${appId}/public/data/shared-public-board`;
-        const USER_PERMISSIONS_PATH = `/artifacts/${appId}/public/data/user_permissions`; // NEW collection for user status
+        const USER_PERMISSIONS_PATH = `/artifacts/${appId}/public/data/user_permissions`; 
 
-        const provider = new GoogleAuthProvider();
+        // REMOVED: const provider = new GoogleAuthProvider();
 
         let currentUserId = null;
         let isUserAdmin = false;
         let userApprovalStatus = 'Loading...'; 
-        let unsubscribeBoard = null; // To hold the onSnapshot listener for the board
-        let unsubscribePendingUsers = null; // To hold the onSnapshot listener for pending users
-        let unsubscribeUserStatus = null; // To hold the onSnapshot listener for individual user status
-        let unsubscribeAllUsers = null; // NEW: To hold the onSnapshot listener for all users
+        let unsubscribeBoard = null; 
+        let unsubscribePendingUsers = null; 
+        let unsubscribeUserStatus = null; 
+        let unsubscribeAllUsers = null; 
 
         // --- Utility Functions ---
 
@@ -111,11 +112,11 @@
                 unsubscribePendingUsers();
                 unsubscribePendingUsers = null;
             }
-            if (unsubscribeUserStatus) { // Clear individual user status listener
+            if (unsubscribeUserStatus) { 
                 unsubscribeUserStatus();
                 unsubscribeUserStatus = null;
             }
-            if (unsubscribeAllUsers) { // NEW: Clear all users listener
+            if (unsubscribeAllUsers) { 
                 unsubscribeAllUsers();
                 unsubscribeAllUsers = null;
             }
@@ -123,28 +124,7 @@
 
         // --- Authentication Logic ---
 
-        /**
-         * Handles Google Sign-In attempt using a redirect, which avoids COOP errors in iframes.
-         */
-        window.signInWithGoogle = async () => {
-            try {
-                // Use signInWithRedirect instead of signInWithPopup
-                await signInWithRedirect(auth, provider);
-                // The browser will be redirected to the Google sign-in page.
-            } catch (error) {
-                console.error("Authentication Error:", error);
-                const errorCode = error.code;
-                let errorMessage = "An unknown authentication error occurred.";
-
-                if (errorCode === 'auth/unauthorized-domain') {
-                    errorMessage = "🛑 Unauthorized Domain. Please add the current domain to the 'Authorized domains' list in your Firebase Authentication settings.";
-                } else {
-                    errorMessage = `Error: ${errorCode}. Please check console for details.`;
-                }
-
-                showStatus(errorMessage, 'text-red-600 font-semibold');
-            }
-        };
+        // REMOVED: window.signInWithGoogle - Replaced by automatic environment sign-in
 
         /**
          * Handles Sign-Out.
@@ -171,7 +151,6 @@
             currentUserId = user.uid;
             isUserAdmin = user.uid === ADMIN_UID;
             
-            // Always clear the individual status listener before proceeding to avoid conflicts
             if (unsubscribeUserStatus) {
                 unsubscribeUserStatus();
                 unsubscribeUserStatus = null;
@@ -181,23 +160,20 @@
 
             // --- CRITICAL ADMIN CHECK (PRIORITIZED) ---
             if (isUserAdmin) {
-                userApprovalStatus = 'Approved'; // Admin always approved
+                userApprovalStatus = 'Approved'; 
                 console.log(`ADMIN detected! UID: ${user.uid}. Forcing 'Approved' status.`);
 
-                // Attempt to delete any lingering 'Pending' status document asynchronously.
-                // We don't wait for this, as the admin logic is prioritized.
                 getDoc(userDocRef).then(userDoc => {
                     if (userDoc.exists()) {
                          deleteDoc(userDocRef)
-                            .then(() => console.log("Admin status document deleted successfully."))
+                            .then(() => console.log("Admin status document deleted successfully (to keep DB clean)."))
                             .catch(e => console.error("Failed to delete Admin status doc:", e));
                     }
                 });
                 
-                // Set up the listeners and update view for the Admin
                 listenToPendingUsers(); 
-                listenToAllUsers(); // NEW: Start listening for all users
-                updateAppView(); // IMMEDIATELY render the Admin view
+                listenToAllUsers(); 
+                updateAppView(); 
                 return; 
             }
             // ------------------------------------------
@@ -211,8 +187,9 @@
                 // New standard user: create a 'Pending' document
                 await setDoc(userDocRef, { 
                     status: 'Pending', 
-                    email: user.email,
-                    name: user.displayName,
+                    // Use a placeholder if email/name is not available from custom token/anon auth
+                    email: user.email || 'N/A (Anonymous/Token User)',
+                    name: user.displayName || 'Token User',
                     joinTimestamp: Date.now()
                 });
                 userApprovalStatus = 'Pending';
@@ -220,7 +197,6 @@
             
             // Set up a listener for the standard user's *own* status changes
             unsubscribeUserStatus = onSnapshot(userDocRef, (docSnapshot) => {
-                // Ensure the document still exists
                 if (docSnapshot.exists()) {
                     const newStatus = docSnapshot.data().status;
                     if (userApprovalStatus !== newStatus) {
@@ -229,12 +205,12 @@
                         if (userApprovalStatus === 'Approved') {
                             listenToBoard();
                         }
-                        updateAppView(); // Re-render the view when status changes
+                        updateAppView(); 
                     }
                 }
             });
             
-            updateAppView(); // Call updateAppView() for standard users as well
+            updateAppView(); 
         }
 
         /**
@@ -245,25 +221,21 @@
             const pendingSection = document.getElementById('pending-section');
             const adminPanel = document.getElementById('admin-panel');
 
-            // Set User Display HTML (Sign Out, Name, UID)
             updateUserDisplay(auth.currentUser);
 
-            // Hide everything first
             boardSection.classList.add('hidden');
             pendingSection.classList.add('hidden');
             if (adminPanel) adminPanel.classList.add('hidden');
 
-            // Show appropriate content
             if (userApprovalStatus === 'Approved') {
                 boardSection.classList.remove('hidden');
                 
-                // Ensure any loading/pending status text is cleared 
                 document.getElementById('pending-status-text').textContent = 'Approved'; 
-                listenToBoard(); // Always call listenToBoard when approved
+                listenToBoard(); 
 
                 if (isUserAdmin && adminPanel) {
                     listenToPendingUsers(); 
-                    listenToAllUsers(); // Call listener for all users here
+                    listenToAllUsers(); 
                     adminPanel.classList.remove('hidden');
                 }
 
@@ -271,7 +243,6 @@
                 pendingSection.classList.remove('hidden');
                 document.getElementById('pending-status-text').textContent = userApprovalStatus;
                 
-                // Clear all other listeners when stuck on Pending/Loading
                 if (unsubscribeBoard) {
                     unsubscribeBoard();
                     unsubscribeBoard = null;
@@ -280,7 +251,7 @@
                     unsubscribePendingUsers();
                     unsubscribePendingUsers = null;
                 }
-                if (unsubscribeAllUsers) { // Clear all users listener
+                if (unsubscribeAllUsers) { 
                     unsubscribeAllUsers();
                     unsubscribeAllUsers = null;
                 }
@@ -298,12 +269,16 @@
                  return;
              }
 
+             // Note: user.displayName and user.email might be null/empty for custom token sign-in
+             const displayName = user.displayName || 'Token User';
+             const email = user.email || 'N/A';
+
              userDisplay.innerHTML = `
                 <div class="flex justify-between items-center">
                     <div>
                         <div class="text-sm font-semibold text-gray-700">Logged in as:</div>
-                        <div class="text-xl font-bold text-indigo-700">${user.displayName}</div>
-                        <div class="text-sm text-gray-500 mb-2">${user.email}</div>
+                        <div class="text-xl font-bold text-indigo-700">${displayName}</div>
+                        <div class="text-sm text-gray-500 mb-2">${email}</div>
                     </div>
                     <button onclick="signOutUser()" 
                         class="px-4 py-2 text-sm bg-gray-100 text-gray-700 font-medium rounded-lg hover:bg-gray-200 transition duration-150 shadow-sm">
@@ -327,18 +302,20 @@
             if (user) {
                 authSection.classList.add('hidden');
                 loggedInSection.classList.remove('hidden');
-                checkAndHandleUserApproval(user); // Start permission check flow
+                checkAndHandleUserApproval(user); 
             } else {
                 currentUserId = null;
                 isUserAdmin = false;
-                userApprovalStatus = 'Loading...';
+                userApprovalStatus = 'Unauthenticated'; // Changed from 'Loading...'
                 authSection.classList.remove('hidden');
                 loggedInSection.classList.add('hidden');
                 clearListeners(); 
+                // Update the unauthorized message
+                document.getElementById('auth-status-msg').textContent = "You are currently unauthenticated. Please launch the app from a secure environment to automatically sign in.";
             }
         }
         
-        // --- Admin Approval and Management Panel Logic ---
+        // --- Admin Approval and Management Panel Logic (Unchanged) ---
 
         /**
          * ADMIN function to approve a pending user.
@@ -352,7 +329,6 @@
 
             try {
                 const docRef = doc(db, USER_PERMISSIONS_PATH, userId);
-                // Note: The onSnapshot listener in the client app will pick up this change instantly.
                 await updateDoc(docRef, { status: 'Approved', approvalTimestamp: Date.now() });
                 showStatus(`User ${userId} approved successfully!`, 'text-green-600');
             } catch (e) {
@@ -363,7 +339,6 @@
 
         /**
          * ADMIN function to permanently remove a user's access by deleting their permission document.
-         * Note: This does NOT delete the user's Firebase Auth account, but revokes application access.
          * @param {string} userId - The user ID to remove.
          */
         window.removeUserAccess = async (userId) => {
@@ -392,7 +367,7 @@
             const q = query(
                 collection(db, USER_PERMISSIONS_PATH), 
                 where("status", "==", "Pending"), 
-                orderBy("joinTimestamp", "desc")
+                // NOTE: No orderBy here to avoid index errors, rely on client-side sorting if needed.
             );
 
             unsubscribePendingUsers = onSnapshot(q, (snapshot) => {
@@ -400,6 +375,8 @@
                 snapshot.forEach((doc) => {
                     pendingUsers.push({ id: doc.id, ...doc.data() });
                 });
+                // Client-side sort by timestamp
+                pendingUsers.sort((a, b) => b.joinTimestamp - a.joinTimestamp); 
                 renderPendingUsersPanel(pendingUsers);
             }, (error) => {
                 console.error("Error fetching pending users: ", error);
@@ -414,17 +391,15 @@
             if (!isUserAdmin) return;
             if (unsubscribeAllUsers) unsubscribeAllUsers();
 
-            // Query all documents in the user_permissions collection, sorted by join time.
-            const q = query(
-                collection(db, USER_PERMISSIONS_PATH), 
-                orderBy("joinTimestamp", "desc")
-            );
+            const q = collection(db, USER_PERMISSIONS_PATH); 
 
             unsubscribeAllUsers = onSnapshot(q, (snapshot) => {
                 const allUsers = [];
                 snapshot.forEach((doc) => {
                     allUsers.push({ id: doc.id, ...doc.data() });
                 });
+                 // Client-side sort by timestamp
+                allUsers.sort((a, b) => b.joinTimestamp - a.joinTimestamp);
                 renderAllUsersPanel(allUsers);
             }, (error) => {
                 console.error("Error fetching all users: ", error);
@@ -493,7 +468,6 @@
                             const statusColor = user.status === 'Approved' ? 'bg-green-100 text-green-800' : 
                                                 user.status === 'Pending' ? 'bg-yellow-100 text-yellow-800' : 'bg-gray-100 text-gray-600';
                             
-                            // Prevent accidental removal of self (the current admin)
                             const removeDisabled = user.id === currentUserId ? 'disabled' : '';
                             const removeTitle = user.id === currentUserId ? 'Cannot remove yourself' : 'Remove access for this user';
 
@@ -513,7 +487,7 @@
                                         <button onclick="removeUserAccess('${user.id}')" 
                                                 class="p-1.5 text-xs bg-red-50 text-red-600 rounded-lg hover:bg-red-100 transition duration-150 ${removeDisabled ? 'opacity-50 cursor-not-allowed' : ''}"
                                                 ${removeDisabled} title="${removeTitle}">
-                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3"></path></svg>
                                         </button>
                                     </td>
                                 </tr>
@@ -525,7 +499,7 @@
             container.innerHTML = tableHtml;
         }
 
-        // --- Board Operations (Unchanged, but only runnable if Approved) ---
+        // --- Board Operations (Unchanged) ---
 
         /**
          * Handles the submission of a new board entry/request.
@@ -543,7 +517,7 @@
                 await addDoc(collection(db, BOARD_PATH), {
                     entryText: entryText,
                     timestamp: Date.now(),
-                    userName: auth.currentUser.displayName || 'Anonymous',
+                    userName: auth.currentUser.displayName || 'Token User',
                     userEmail: auth.currentUser.email || 'N/A',
                     userId: auth.currentUser.uid,
                     status: 'Pending'
@@ -630,12 +604,10 @@
                 const isCurrentUserAdmin = currentUserId === ADMIN_UID;
                 const statusClasses = getStatusClasses(entry.status);
 
-                // --- Admin Status Control and Delete Buttons ---
                 let adminControlsHtml = '';
                 if (isCurrentUserAdmin) {
                     const statusOptions = ['Pending', 'Assigned', 'Completed'];
                     
-                    // Status Selector
                     const statusSelector = statusOptions.map(s => 
                         `<option value="${s}" ${entry.status === s ? 'selected' : ''}>${s}</option>`
                     ).join('');
@@ -647,7 +619,6 @@
                                 ${statusSelector}
                             </select>
                             
-                            <!-- Delete Button (Admin Only) -->
                             <button onclick="deleteEntry('${entry.id}')" 
                                     class="p-2 text-xs bg-red-100 text-red-600 hover:bg-red-200 rounded-lg transition duration-150 shadow-sm"
                                     title="Delete Request">
@@ -657,7 +628,6 @@
                     `;
                 }
 
-                // --- Main Card Rendering ---
                 const item = document.createElement('div');
                 item.className = `bg-white p-5 mb-4 rounded-xl shadow-lg border-l-8 border-t-2 ${statusClasses.match(/border-\w+-\d+/)[0]}`;
                 
@@ -668,18 +638,15 @@
                             <p class="text-sm text-gray-500">Submitted at ${formatTime(entry.timestamp)}</p>
                         </div>
                         
-                        <!-- Status Badge (Visible to all) -->
                         <span class="inline-flex items-center px-4 py-1 text-sm font-semibold rounded-full ${statusClasses.match(/bg-\w+-\d+/)[0]} ${statusClasses.match(/text-\w+-\d+/)[0]} shadow-md">
                             ${entry.status}
                         </span>
                     </div>
 
-                    <!-- Message Content -->
                     <div class="bg-gray-50 p-3 rounded-lg border border-gray-200">
                          <p class="text-gray-800 break-words whitespace-pre-wrap">${entry.entryText}</p>
                     </div>
 
-                    <!-- Admin Controls (Conditional) -->
                     ${adminControlsHtml}
                 `;
                 boardContainer.appendChild(item);
@@ -694,14 +661,16 @@
                 unsubscribeBoard();
             }
 
-            // NOTE: This uses a simple orderBy, which only requires a single-field index on 'timestamp' (which Firestore usually handles automatically)
-            const q = query(collection(db, BOARD_PATH), orderBy("timestamp", "desc"));
+            // NOTE: We rely on client-side sorting to avoid required indexes
+            const q = collection(db, BOARD_PATH);
 
             unsubscribeBoard = onSnapshot(q, (snapshot) => {
                 const entries = [];
                 snapshot.forEach((doc) => {
                     entries.push({ id: doc.id, ...doc.data() });
                 });
+                // Client-side sort by timestamp
+                entries.sort((a, b) => b.timestamp - a.timestamp);
                 renderBoard(entries);
             }, (error) => {
                 console.error("Error fetching board data: ", error);
@@ -710,21 +679,10 @@
         }
 
 
-        // --- RESTRUCTURED INITIALIZATION AND AUTH LISTENER (FIX FOR REDIRECT LOOP) ---
-        // CRITICAL FIX IMPLEMENTED IN initializeAppFlow
+        // --- AUTOMATIC INITIALIZATION AND AUTH LISTENER (FINAL FIX) ---
 
         /**
-         * Sets up the primary Auth State Listener for existing sessions and sign-outs.
-         */
-        function setupAuthListener() {
-            onAuthStateChanged(auth, (user) => {
-                console.log(`onAuthStateChanged fired. User: ${user ? user.uid : 'null'}`);
-                updateUI(user);
-            });
-        }
-        
-        /**
-         * Runs initial startup logic: Custom Token Auth (Canvas) and Redirect Result Check (Google).
+         * Runs initial startup logic: Custom Token Auth (Canvas) or Anonymous Sign-in.
          */
         async function initializeAppFlow() {
             // 1. Initial Custom Token Sign-in attempt (Canvas environment)
@@ -733,31 +691,21 @@
                     await signInWithCustomToken(auth, initialAuthToken);
                     console.log("Canvas custom token sign-in successful.");
                  } catch (e) {
-                    console.error("Custom token sign-in failed:", e);
+                    // Fallback to anonymous if token fails (e.g., token expired or invalid)
+                    await signInAnonymously(auth);
+                    console.log("Custom token sign-in failed, proceeding with anonymous sign-in.");
                  }
+            } else {
+                 // 2. Fallback to Anonymous Sign-in if no token is available
+                 await signInAnonymously(auth);
+                 console.log("No custom token found, proceeding with anonymous sign-in.");
             }
             
-            // 2. Handle redirect result (if the page load is a return from Google Sign-in)
-            try {
-                const result = await getRedirectResult(auth);
-                if (result) {
-                    const user = result.user;
-                    console.log(`Redirect sign-in successful, processing user: ${user.displayName}`);
-                    
-                    // CRITICAL FIX: Explicitly handle the UI update immediately 
-                    // and RETURN to prevent the race condition with onAuthStateChanged.
-                    updateUI(user); 
-                    setupAuthListener(); // Start listener for future sign-outs/changes
-                    return; 
-                }
-            } catch (error) {
-                console.error("Redirect sign-in error:", error);
-                // Auth error can sometimes be a loop cause (e.g., storage issue). Log it.
-                showStatus(`Sign-in failed after redirect: ${error.code}. Check console.`, 'text-red-600');
-            }
-            
-            // 3. Set up the main listener for all subsequent state changes (Only runs if no redirect result was processed)
-            setupAuthListener();
+            // 3. Set up the main listener for all subsequent state changes
+            onAuthStateChanged(auth, (user) => {
+                console.log(`onAuthStateChanged fired. User: ${user ? user.uid : 'null'}`);
+                updateUI(user);
+            });
         }
 
         // Start the entire flow when the module script executes
@@ -775,19 +723,13 @@
         <!-- Status Message Area -->
         <div id="status-message" class="text-center h-6 mb-4"></div>
 
-        <!-- Authentication Section (Visible when logged out) -->
+        <!-- Authentication Section (Visible when logged out/unauthenticated) -->
         <div id="auth-section" class="flex flex-col items-center p-8 bg-white rounded-xl shadow-2xl border border-gray-100">
-            <p class="text-xl font-medium text-gray-700 mb-6">Sign In to Request Access</p>
-            <button onclick="signInWithGoogle()"
-                    class="flex items-center justify-center px-6 py-3 bg-indigo-600 text-white font-bold rounded-full shadow-lg hover:bg-indigo-700 transition duration-300 transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-indigo-500 focus:ring-opacity-50">
-                <svg class="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 24 24">
-                    <path d="M22.5 12.58c0-.77-.07-1.52-.2-2.25H12v4.51h6.15c-.27 1.35-.97 2.5-2.09 3.32v3.5h4.5v-3.5c1.47-1.29 2.37-3.21 2.37-5.08z"/>
-                    <path d="M12 23c3.27 0 6.02-1.08 8.03-2.92l-4.5-3.5c-1.25.84-2.88 1.34-4.53 1.34-3.52 0-6.44-2.37-7.49-5.59H0v3.5c2.01 4.3 6.64 7.51 12 7.51z"/>
-                    <path d="M4.51 10.92c-.22-.65-.34-1.34-.34-2.05s.12-1.4.34-2.05V3.33H0v3.5c.67 1.33 1.76 2.45 3.09 3.33z"/>
-                    <path d="M12 4.48c1.94 0 3.68.65 5.06 1.95L19 3c-1.63-1.42-3.8-2.48-6.5-2.48-5.36 0-10.03 3.21-12 7.51L4.51 10.9c1.05-3.22 3.97-5.59 7.49-5.59z"/>
-                </svg>
-                Sign In with Google
-            </button>
+            <p class="text-xl font-medium text-gray-700 mb-6">Authenticating Access...</p>
+            <div id="auth-status-msg" class="text-red-500 text-center font-medium">
+                Authentication is automatic using the secure environment token. Waiting for login...
+            </div>
+            <!-- REMOVED: Google Sign-In button -->
         </div>
 
         <!-- Logged In Section (Conditional content based on approval) -->
