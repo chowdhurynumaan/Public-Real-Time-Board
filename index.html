@@ -25,7 +25,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signInWithCustomToken, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, addDoc, onSnapshot, query, orderBy, deleteDoc, doc, updateDoc, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, addDoc, onSnapshot, query, orderBy, deleteDoc, doc, updateDoc, setLogLevel, getDoc, setDoc, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // IMPORTANT: Configuration is now set!
         // ----------------------------------------------------------------
@@ -53,12 +53,18 @@
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
+        
+        // Firestore Paths
         const BOARD_PATH = `/artifacts/${appId}/public/data/shared-public-board`;
+        const USER_PERMISSIONS_PATH = `/artifacts/${appId}/public/data/user_permissions`; // NEW collection for user status
+
         const provider = new GoogleAuthProvider();
 
         let currentUserId = null;
-        let authReady = false;
-        let unsubscribe = null; // To hold the onSnapshot listener function
+        let isUserAdmin = false;
+        let userApprovalStatus = 'Loading...'; 
+        let unsubscribeBoard = null; // To hold the onSnapshot listener for the board
+        let unsubscribePendingUsers = null; // To hold the onSnapshot listener for pending users
 
         // --- Utility Functions ---
 
@@ -87,6 +93,20 @@
             }
         }
 
+        /**
+         * Clears all existing Firestore listeners.
+         */
+        function clearListeners() {
+            if (unsubscribeBoard) {
+                unsubscribeBoard();
+                unsubscribeBoard = null;
+            }
+            if (unsubscribePendingUsers) {
+                unsubscribePendingUsers();
+                unsubscribePendingUsers = null;
+            }
+        }
+
         // --- Authentication Logic ---
 
         /**
@@ -94,8 +114,8 @@
          */
         window.signInWithGoogle = async () => {
             try {
-                const result = await signInWithPopup(auth, provider);
-                showStatus(`Signed in successfully as ${result.user.displayName}!`, 'text-green-600');
+                // Sign-in will trigger onAuthStateChanged
+                await signInWithPopup(auth, provider);
             } catch (error) {
                 console.error("Authentication Error:", error);
                 const errorCode = error.code;
@@ -118,11 +138,7 @@
          */
         window.signOutUser = async () => {
             try {
-                // Stop listening to the board before signing out
-                if (unsubscribe) {
-                    unsubscribe();
-                    unsubscribe = null;
-                }
+                clearListeners();
                 await signOut(auth);
                 showStatus("Signed out successfully.", 'text-gray-600');
             } catch (error) {
@@ -132,52 +148,199 @@
         };
 
 
+        // --- Core User Approval and UI Flow ---
+
         /**
-         * Handles User Interface changes based on authentication state.
+         * Fetches user approval status and sets it, creating a 'Pending' doc if none exists.
+         * @param {object} user - The Firebase user object.
+         */
+        async function checkAndHandleUserApproval(user) {
+            currentUserId = user.uid;
+            isUserAdmin = user.uid === ADMIN_UID;
+            
+            if (isUserAdmin) {
+                userApprovalStatus = 'Approved'; // Admin always approved
+                // Start listening to pending users for the admin panel
+                listenToPendingUsers(); 
+            } else {
+                const userDocRef = doc(db, USER_PERMISSIONS_PATH, user.uid);
+                const userDoc = await getDoc(userDocRef);
+
+                if (userDoc.exists()) {
+                    userApprovalStatus = userDoc.data().status;
+                } else {
+                    // New user: create a 'Pending' document
+                    await setDoc(userDocRef, { 
+                        status: 'Pending', 
+                        email: user.email,
+                        name: user.displayName,
+                        joinTimestamp: Date.now()
+                    });
+                    userApprovalStatus = 'Pending';
+                }
+                
+                // Set up a listener for the user's *own* status changes
+                onSnapshot(userDocRef, (docSnapshot) => {
+                    if (docSnapshot.exists()) {
+                        userApprovalStatus = docSnapshot.data().status;
+                        updateAppView(); // Re-render the view when status changes (e.g., when Admin approves them)
+                    }
+                });
+            }
+            
+            updateAppView();
+        }
+
+        /**
+         * Controls which main UI section is displayed based on user's approval status.
+         */
+        function updateAppView() {
+            const boardSection = document.getElementById('board-section');
+            const pendingSection = document.getElementById('pending-section');
+            const adminPanel = document.getElementById('admin-panel');
+
+            // Set User Display HTML (Sign Out, Name, UID)
+            updateUserDisplay(auth.currentUser);
+
+            // Hide everything first
+            boardSection.classList.add('hidden');
+            pendingSection.classList.add('hidden');
+            if (adminPanel) adminPanel.classList.add('hidden');
+
+            // Show appropriate content
+            if (userApprovalStatus === 'Approved') {
+                boardSection.classList.remove('hidden');
+                listenToBoard(); // Start board listener only if approved
+                if (isUserAdmin && adminPanel) adminPanel.classList.remove('hidden');
+
+            } else if (userApprovalStatus === 'Pending' || userApprovalStatus === 'Loading...') {
+                pendingSection.classList.remove('hidden');
+                document.getElementById('pending-status-text').textContent = userApprovalStatus;
+                clearListeners(); // Ensure board listener is stopped
+            }
+        }
+
+        /**
+         * Renders the user display bar (called by updateAppView).
+         */
+        function updateUserDisplay(user) {
+             const userDisplay = document.getElementById('user-display');
+
+             userDisplay.innerHTML = `
+                <div class="flex justify-between items-center">
+                    <div>
+                        <div class="text-sm font-semibold text-gray-700">Logged in as:</div>
+                        <div class="text-xl font-bold text-indigo-700">${user.displayName}</div>
+                        <div class="text-sm text-gray-500 mb-2">${user.email}</div>
+                    </div>
+                    <button onclick="signOutUser()" 
+                        class="px-4 py-2 text-sm bg-gray-100 text-gray-700 font-medium rounded-lg hover:bg-gray-200 transition duration-150 shadow-sm">
+                        Sign Out
+                    </button>
+                </div>
+                <div class="text-xs text-gray-400 font-mono break-all mt-1 p-1 bg-gray-100 rounded-lg">
+                    UID: ${user.uid} ${isUserAdmin ? '<span class="text-sm text-red-500 font-bold ml-2">(ADMIN)</span>' : ''}
+                </div>
+            `;
+        }
+
+        /**
+         * Handles the main UI change based on authentication state (login/logout).
          * @param {object | null} user - The Firebase user object or null if logged out.
          */
         function updateUI(user) {
             const authSection = document.getElementById('auth-section');
-            const boardSection = document.getElementById('board-section');
-            const userDisplay = document.getElementById('user-display');
+            const loggedInSection = document.getElementById('logged-in-section');
 
             if (user) {
-                currentUserId = user.uid;
                 authSection.classList.add('hidden');
-                boardSection.classList.remove('hidden');
-                
-                // User display with Sign Out button
-                userDisplay.innerHTML = `
-                    <div class="flex justify-between items-center">
-                        <div>
-                            <div class="text-sm font-semibold text-gray-700">Logged in as:</div>
-                            <div class="text-xl font-bold text-indigo-700">${user.displayName}</div>
-                            <div class="text-sm text-gray-500 mb-2">${user.email}</div>
-                        </div>
-                        <button onclick="signOutUser()" 
-                            class="px-4 py-2 text-sm bg-gray-100 text-gray-700 font-medium rounded-lg hover:bg-gray-200 transition duration-150 shadow-sm">
-                            Sign Out
-                        </button>
-                    </div>
-                    <div class="text-xs text-gray-400 font-mono break-all mt-1 p-1 bg-gray-100 rounded-lg">
-                        UID: ${user.uid} ${user.uid === ADMIN_UID ? '<span class="text-sm text-red-500 font-bold ml-2">(ADMIN)</span>' : ''}
-                    </div>
-                `;
-
-                // The fix: The listener is now triggered reliably in the onAuthStateChanged block below.
-                
+                loggedInSection.classList.remove('hidden');
+                checkAndHandleUserApproval(user); // Start permission check flow
             } else {
                 currentUserId = null;
+                isUserAdmin = false;
+                userApprovalStatus = 'Loading...';
                 authSection.classList.remove('hidden');
-                boardSection.classList.add('hidden');
-                
-                // Clear the board display when logged out
-                const boardContainer = document.getElementById('board-container');
-                if(boardContainer) boardContainer.innerHTML = '<p class="text-center text-gray-400 p-8">Sign in to view requests.</p>';
+                loggedInSection.classList.add('hidden');
+                clearListeners(); 
             }
         }
+        
+        // --- Admin Approval Panel Logic ---
 
-        // --- Core App Logic ---
+        /**
+         * ADMIN function to approve a pending user.
+         * @param {string} userId - The user ID to approve.
+         */
+        window.approveUser = async (userId) => {
+            if (!isUserAdmin) {
+                showStatus("Admin approval denied.", 'text-red-500');
+                return;
+            }
+
+            try {
+                const docRef = doc(db, USER_PERMISSIONS_PATH, userId);
+                await updateDoc(docRef, { status: 'Approved', approvalTimestamp: Date.now() });
+                showStatus(`User ${userId} approved successfully!`, 'text-green-600');
+            } catch (e) {
+                console.error("Error approving user: ", e);
+                showStatus("Failed to approve user. Check console and security rules.", 'text-red-500');
+            }
+        };
+
+        /**
+         * ADMIN: Sets up the real-time listener for pending user accounts.
+         */
+        function listenToPendingUsers() {
+            if (!isUserAdmin) return;
+            if (unsubscribePendingUsers) unsubscribePendingUsers();
+
+            const q = query(collection(db, USER_PERMISSIONS_PATH), where("status", "==", "Pending"), orderBy("joinTimestamp", "desc"));
+
+            unsubscribePendingUsers = onSnapshot(q, (snapshot) => {
+                const pendingUsers = [];
+                snapshot.forEach((doc) => {
+                    pendingUsers.push({ id: doc.id, ...doc.data() });
+                });
+                renderPendingUsersPanel(pendingUsers);
+            }, (error) => {
+                console.error("Error fetching pending users: ", error);
+                showStatus("Failed to load pending users.", 'text-red-500');
+            });
+        }
+
+        /**
+         * ADMIN: Renders the panel listing pending users.
+         * @param {object[]} users - Array of pending user objects.
+         */
+        function renderPendingUsersPanel(users) {
+            const container = document.getElementById('pending-users-list');
+            if (!container) return;
+            
+            container.innerHTML = '';
+            if (users.length === 0) {
+                container.innerHTML = '<p class="text-center text-gray-500 p-4">No users currently awaiting approval.</p>';
+                return;
+            }
+
+            users.forEach(user => {
+                const item = document.createElement('div');
+                item.className = 'flex justify-between items-center bg-gray-50 p-3 rounded-lg border border-yellow-200 mb-2';
+                item.innerHTML = `
+                    <div class="flex-grow">
+                        <div class="font-semibold text-gray-800">${user.name || 'N/A'} (${user.email})</div>
+                        <div class="text-xs text-gray-500">UID: ${user.id} | Joined: ${new Date(user.joinTimestamp).toLocaleString()}</div>
+                    </div>
+                    <button onclick="approveUser('${user.id}')" 
+                            class="px-3 py-1 bg-green-500 text-white text-sm font-medium rounded-lg hover:bg-green-600 transition duration-150 shadow-md">
+                        Approve
+                    </button>
+                `;
+                container.appendChild(item);
+            });
+        }
+
+        // --- Board Operations (Unchanged, but only runnable if Approved) ---
 
         /**
          * Handles the submission of a new board entry/request.
@@ -186,8 +349,8 @@
             event.preventDefault();
             const entryInput = document.getElementById('entry-input');
             const entryText = entryInput.value.trim();
-            if (!entryText || !auth.currentUser) {
-                showStatus("Please enter content and ensure you are logged in.", 'text-red-500');
+            if (!entryText || !auth.currentUser || userApprovalStatus !== 'Approved') {
+                showStatus("Submission denied. Ensure content is entered and your account is approved.", 'text-red-500');
                 return;
             }
 
@@ -198,9 +361,9 @@
                     userName: auth.currentUser.displayName || 'Anonymous',
                     userEmail: auth.currentUser.email || 'N/A',
                     userId: auth.currentUser.uid,
-                    status: 'Pending' // NEW: Initial status is always Pending
+                    status: 'Pending'
                 });
-                entryInput.value = ''; // Clear input on success
+                entryInput.value = ''; 
                 showStatus("Request submitted! Status is Pending.", 'text-green-600');
             } catch (e) {
                 console.error("Error adding document: ", e);
@@ -210,8 +373,7 @@
         
         /**
          * ADMIN function to update the status of a request.
-         * @param {string} docId - The Firestore document ID.
-         * @param {string} newStatus - The new status to set ('Assigned' or 'Completed').
+         * ... (rest of function remains the same)
          */
         window.updateEntryStatus = async (docId, newStatus) => {
             if (currentUserId !== ADMIN_UID) {
@@ -234,7 +396,7 @@
 
         /**
          * Handles the deletion of a board entry. (Admin only via UI)
-         * @param {string} docId - The Firestore document ID to delete.
+         * ... (rest of function remains the same)
          */
         window.deleteEntry = async (docId) => {
             if (currentUserId !== ADMIN_UID) {
@@ -253,8 +415,7 @@
 
         /**
          * Returns Tailwind CSS classes for a given status.
-         * @param {string} status - The current status string.
-         * @returns {string} Tailwind classes for background and text.
+         * ... (rest of function remains the same)
          */
         function getStatusClasses(status) {
             switch (status) {
@@ -271,13 +432,13 @@
 
         /**
          * Renders the board entries from the snapshot.
-         * @param {object[]} data - Array of entry objects.
+         * ... (rest of function remains the same)
          */
         function renderBoard(data) {
             const boardContainer = document.getElementById('board-container');
             if (!boardContainer) return;
 
-            boardContainer.innerHTML = ''; // Clear existing list
+            boardContainer.innerHTML = ''; 
             
             if (data.length === 0) {
                 boardContainer.innerHTML = '<p class="text-center text-gray-500 mt-8">The request board is currently empty.</p>';
@@ -346,18 +507,16 @@
 
         /**
          * Sets up the real-time listener for the public board.
+         * ... (rest of function remains the same)
          */
         function listenToBoard() {
-            // Stop listening to the board if already active
-            if (unsubscribe) {
-                unsubscribe();
+            if (unsubscribeBoard) {
+                unsubscribeBoard();
             }
 
-            // Query: order by timestamp descending for latest first
             const q = query(collection(db, BOARD_PATH), orderBy("timestamp", "desc"));
 
-            // Real-time listener
-            unsubscribe = onSnapshot(q, (snapshot) => {
+            unsubscribeBoard = onSnapshot(q, (snapshot) => {
                 const entries = [];
                 snapshot.forEach((doc) => {
                     entries.push({ id: doc.id, ...doc.data() });
@@ -371,6 +530,8 @@
 
         // --- Initialization and Auth Listener ---
 
+        let authReady = false; // Add back the authReady flag for token handling
+
         /**
          * Attempts to sign in with the custom token if available (Canvas requirement)
          * and sets up the primary authentication state listener.
@@ -379,27 +540,22 @@
             // 1. Initial Custom Token Sign-in attempt (Canvas environment)
             if (initialAuthToken && !authReady) {
                  try {
+                    // This attempt will trigger a second onAuthStateChanged call if successful
                     await signInWithCustomToken(auth, initialAuthToken);
                  } catch (e) {
                     console.error("Custom token sign-in failed:", e);
                  }
             }
             
-            // 2. Update UI based on current user state
-            updateUI(auth.currentUser);
-            
-            // 3. IMPORTANT FIX: Start the listener only if a user is logged in
-            if (auth.currentUser) {
-                listenToBoard();
+            // 2. Main Logic: Update UI based on current user state
+            // If user is null (logged out), updateUI handles clearing the screen.
+            if (user) {
+                updateUI(user);
             } else {
-                // Stop listening if the user logs out or is not logged in
-                if (unsubscribe) {
-                    unsubscribe();
-                    unsubscribe = null;
-                }
+                updateUI(null);
             }
 
-            // 4. Mark Auth as ready
+            // 3. Mark Auth as ready
             authReady = true;
         });
 
@@ -410,7 +566,7 @@
     <div class="max-w-4xl mx-auto">
         <header class="text-center mb-10">
             <h1 class="text-4xl font-extrabold text-gray-900 tracking-tight">Real-Time Request Manager</h1>
-            <p class="text-gray-500 mt-2">Users submit requests which are initially set to **Pending**. Admin can update the status.</p>
+            <p class="text-gray-500 mt-2">Admin approval required for access.</p>
         </header>
 
         <!-- Status Message Area -->
@@ -418,7 +574,7 @@
 
         <!-- Authentication Section (Visible when logged out) -->
         <div id="auth-section" class="flex flex-col items-center p-8 bg-white rounded-xl shadow-2xl border border-gray-100">
-            <p class="text-xl font-medium text-gray-700 mb-6">Sign In to Submit and Manage Requests</p>
+            <p class="text-xl font-medium text-gray-700 mb-6">Sign In to Request Access</p>
             <button onclick="signInWithGoogle()"
                     class="flex items-center justify-center px-6 py-3 bg-indigo-600 text-white font-bold rounded-full shadow-lg hover:bg-indigo-700 transition duration-300 transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-indigo-500 focus:ring-opacity-50">
                 <svg class="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 24 24">
@@ -431,38 +587,54 @@
             </button>
         </div>
 
-        <!-- Board Section (Visible when logged in) -->
-        <div id="board-section" class="hidden">
+        <!-- Logged In Section (Conditional content based on approval) -->
+        <div id="logged-in-section" class="hidden">
             
-            <!-- User Info and Post Form -->
+            <!-- User Info Bar (Always visible when logged in) -->
             <div class="bg-white p-6 rounded-xl shadow-xl mb-8">
                 <div id="user-display" class="mb-4 pb-4 border-b border-gray-100">
                     <!-- User details and Sign Out button will be injected here -->
                 </div>
 
-                <form onsubmit="submitEntry(event)" class="space-y-4">
-                    <textarea id="entry-input" rows="3" 
-                              class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 resize-none text-gray-800"
-                              placeholder="Type your request or assignment need here."></textarea>
-                    
-                    <button type="submit" 
-                            class="w-full px-4 py-2 bg-indigo-500 text-white font-semibold rounded-lg hover:bg-indigo-600 transition duration-200 shadow-md">
-                        Submit Request
-                    </button>
-                </form>
-            </div>
+                <!-- Admin Approval Panel (Only shown if Admin is logged in and is Approved) -->
+                <div id="admin-panel" class="hidden mt-6 pt-4 border-t border-red-100">
+                    <h2 class="text-xl font-bold text-red-600 mb-4">Admin: Pending User Approvals</h2>
+                    <div id="pending-users-list" class="max-h-60 overflow-y-auto">
+                        <p class="text-center text-gray-400 p-4">Loading pending users...</p>
+                    </div>
+                </div>
 
-            <!-- Real-Time Board Feed -->
-            <div class="mt-8">
-                <h2 class="text-2xl font-bold text-gray-800 mb-6 border-b pb-2">Submitted Requests</h2>
-                <div id="board-container" class="scroll-container max-h-[60vh] overflow-y-auto">
-                    <!-- Request entries will be injected here in real-time -->
-                    <p class="text-center text-gray-400 p-8">Loading requests...</p>
+                <!-- PENDING APPROVAL SECTION (Shown for standard users who are pending) -->
+                <div id="pending-section" class="hidden mt-6 p-6 bg-yellow-50 border-2 border-yellow-300 rounded-xl">
+                    <h2 class="text-xl font-bold text-yellow-800 mb-2">Access Pending</h2>
+                    <p class="text-gray-700">Your account has been created successfully. Access to the Request Manager is currently **<span id="pending-status-text">Pending</span>** approval from the administrator.</p>
+                    <p class="mt-2 text-sm text-yellow-700">Please wait for the administrator to approve your account before you can submit or view requests.</p>
+                </div>
+
+                <!-- MAIN BOARD SECTION (Shown only if Approved) -->
+                <div id="board-section" class="hidden">
+                    <form onsubmit="submitEntry(event)" class="space-y-4">
+                        <textarea id="entry-input" rows="3" 
+                                class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 resize-none text-gray-800"
+                                placeholder="Type your request or assignment need here."></textarea>
+                        
+                        <button type="submit" 
+                                class="w-full px-4 py-2 bg-indigo-500 text-white font-semibold rounded-lg hover:bg-indigo-600 transition duration-200 shadow-md">
+                            Submit Request
+                        </button>
+                    </form>
+
+                    <!-- Real-Time Board Feed -->
+                    <div class="mt-8">
+                        <h2 class="text-2xl font-bold text-gray-800 mb-6 border-b pb-2">Submitted Requests</h2>
+                        <div id="board-container" class="scroll-container max-h-[60vh] overflow-y-auto">
+                            <!-- Request entries will be injected here in real-time -->
+                            <p class="text-center text-gray-400 p-8">Loading requests...</p>
+                        </div>
+                    </div>
                 </div>
             </div>
-
         </div>
-
     </div>
 
 </body>
