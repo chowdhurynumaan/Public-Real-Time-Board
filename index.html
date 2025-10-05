@@ -65,6 +65,7 @@
         let userApprovalStatus = 'Loading...'; 
         let unsubscribeBoard = null; // To hold the onSnapshot listener for the board
         let unsubscribePendingUsers = null; // To hold the onSnapshot listener for pending users
+        let unsubscribeUserStatus = null; // To hold the onSnapshot listener for individual user status
 
         // --- Utility Functions ---
 
@@ -104,6 +105,10 @@
             if (unsubscribePendingUsers) {
                 unsubscribePendingUsers();
                 unsubscribePendingUsers = null;
+            }
+            if (unsubscribeUserStatus) { // Clear individual user status listener
+                unsubscribeUserStatus();
+                unsubscribeUserStatus = null;
             }
         }
 
@@ -158,6 +163,12 @@
             currentUserId = user.uid;
             isUserAdmin = user.uid === ADMIN_UID;
             
+            // Always clear the individual status listener before proceeding to avoid conflicts
+            if (unsubscribeUserStatus) {
+                unsubscribeUserStatus();
+                unsubscribeUserStatus = null;
+            }
+
             const userDocRef = doc(db, USER_PERMISSIONS_PATH, user.uid);
 
             // --- CRITICAL ADMIN CHECK (PRIORITIZED) ---
@@ -173,8 +184,8 @@
                 
                 // Set up the listeners and update view for the Admin
                 listenToPendingUsers(); 
-                updateAppView(); // <-- CALL UPDATE VIEW HERE
-                return; // IMPORTANT: Exit the function for the Admin immediately
+                updateAppView(); // MUST call updateAppView() to render the admin panel/board
+                return; 
             }
             // ------------------------------------------
 
@@ -194,15 +205,15 @@
                 userApprovalStatus = 'Pending';
             }
             
-            // Set up a listener for the user's *own* status changes
-            onSnapshot(userDocRef, (docSnapshot) => {
+            // Set up a listener for the standard user's *own* status changes
+            unsubscribeUserStatus = onSnapshot(userDocRef, (docSnapshot) => {
                 if (docSnapshot.exists()) {
                     userApprovalStatus = docSnapshot.data().status;
                     updateAppView(); // Re-render the view when status changes (e.g., when Admin approves them)
                 }
             });
             
-            updateAppView(); // <-- CALL UPDATE VIEW HERE for standard users
+            updateAppView(); // Call updateAppView() for standard users as well
         }
 
         /**
@@ -343,7 +354,8 @@
                 item.innerHTML = `
                     <div class="flex-grow">
                         <div class="font-semibold text-gray-800">${user.name || 'N/A'} (${user.email})</div>
-                        <div class="text-xs text-gray-500">UID: ${user.id} | Joined: ${new Date(user.joinTimestamp).toLocaleString()}</div>
+                        <div class="text-xs text-gray-500">UID: ${new Date(user.joinTimestamp).toLocaleString()}</div>
+                         <div class="text-xs text-gray-400 font-mono break-all mt-1">${user.id}</div>
                     </div>
                     <button onclick="approveUser('${user.id}')" 
                             class="px-3 py-1 bg-green-500 text-white text-sm font-medium rounded-lg hover:bg-green-600 transition duration-150 shadow-md">
