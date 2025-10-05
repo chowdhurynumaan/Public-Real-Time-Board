@@ -164,10 +164,8 @@
                     </div>
                 `;
 
-                // Start listening to the board only when the user is logged in
-                if (authReady) {
-                    listenToBoard();
-                }
+                // The fix: The listener is now triggered reliably in the onAuthStateChanged block below.
+                
             } else {
                 currentUserId = null;
                 authSection.classList.remove('hidden');
@@ -350,6 +348,7 @@
          * Sets up the real-time listener for the public board.
          */
         function listenToBoard() {
+            // Stop listening to the board if already active
             if (unsubscribe) {
                 unsubscribe();
             }
@@ -377,6 +376,7 @@
          * and sets up the primary authentication state listener.
          */
         onAuthStateChanged(auth, async (user) => {
+            // 1. Initial Custom Token Sign-in attempt (Canvas environment)
             if (initialAuthToken && !authReady) {
                  try {
                     await signInWithCustomToken(auth, initialAuthToken);
@@ -384,8 +384,22 @@
                     console.error("Custom token sign-in failed:", e);
                  }
             }
-            // Update the UI after the token check or standard auth change
+            
+            // 2. Update UI based on current user state
             updateUI(auth.currentUser);
+            
+            // 3. IMPORTANT FIX: Start the listener only if a user is logged in
+            if (auth.currentUser) {
+                listenToBoard();
+            } else {
+                // Stop listening if the user logs out or is not logged in
+                if (unsubscribe) {
+                    unsubscribe();
+                    unsubscribe = null;
+                }
+            }
+
+            // 4. Mark Auth as ready
             authReady = true;
         });
 
