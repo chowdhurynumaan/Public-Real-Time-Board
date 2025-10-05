@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Real-Time Public Board (Admin Secured)</title>
+    <title>Request Management Board (Admin Secured)</title>
     <!-- Load Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Load Inter font -->
@@ -25,7 +25,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signInWithCustomToken, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, addDoc, onSnapshot, query, orderBy, deleteDoc, doc, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, addDoc, onSnapshot, query, orderBy, deleteDoc, doc, updateDoc, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // IMPORTANT: Configuration is now set!
         // ----------------------------------------------------------------
@@ -175,14 +175,14 @@
                 
                 // Clear the board display when logged out
                 const boardContainer = document.getElementById('board-container');
-                if(boardContainer) boardContainer.innerHTML = '<p class="text-center text-gray-400 p-8">Sign in to view posts.</p>';
+                if(boardContainer) boardContainer.innerHTML = '<p class="text-center text-gray-400 p-8">Sign in to view requests.</p>';
             }
         }
 
         // --- Core App Logic ---
 
         /**
-         * Handles the submission of a new board entry.
+         * Handles the submission of a new board entry/request.
          */
         window.submitEntry = async (event) => {
             event.preventDefault();
@@ -199,33 +199,49 @@
                     timestamp: Date.now(),
                     userName: auth.currentUser.displayName || 'Anonymous',
                     userEmail: auth.currentUser.email || 'N/A',
-                    userId: auth.currentUser.uid
+                    userId: auth.currentUser.uid,
+                    status: 'Pending' // NEW: Initial status is always Pending
                 });
                 entryInput.value = ''; // Clear input on success
-                showStatus("Entry posted successfully!", 'text-green-600');
+                showStatus("Request submitted! Status is Pending.", 'text-green-600');
             } catch (e) {
                 console.error("Error adding document: ", e);
-                showStatus("Failed to post entry. Check console for details.", 'text-red-500');
+                showStatus("Failed to submit request. Check console for details.", 'text-red-500');
+            }
+        };
+        
+        /**
+         * ADMIN function to update the status of a request.
+         * @param {string} docId - The Firestore document ID.
+         * @param {string} newStatus - The new status to set ('Assigned' or 'Completed').
+         */
+        window.updateEntryStatus = async (docId, newStatus) => {
+            if (currentUserId !== ADMIN_UID) {
+                showStatus("You are not authorized to change status.", 'text-red-500');
+                return;
+            }
+
+            try {
+                const docRef = doc(db, BOARD_PATH, docId);
+                await updateDoc(docRef, {
+                    status: newStatus,
+                    adminUpdateTimestamp: Date.now()
+                });
+                showStatus(`Request ${docId} status updated to ${newStatus}.`, 'text-indigo-600');
+            } catch (e) {
+                console.error("Error updating document status: ", e);
+                showStatus("Failed to update status. Check console and security rules.", 'text-red-500');
             }
         };
 
         /**
-         * Handles the deletion of a board entry.
+         * Handles the deletion of a board entry. (Admin only via UI)
          * @param {string} docId - The Firestore document ID to delete.
-         * @param {string} entryUserId - The UID of the user who created the entry.
          */
-        window.deleteEntry = async (docId, entryUserId) => {
-            if (!auth.currentUser) {
-                showStatus("You must be logged in to delete entries.", 'text-red-500');
+        window.deleteEntry = async (docId) => {
+            if (currentUserId !== ADMIN_UID) {
+                showStatus("Deletion denied. Only the Admin can delete entries.", 'text-red-500');
                 return;
-            }
-
-            // Check for Admin status (client-side check for button visibility)
-            const canDelete = (auth.currentUser.uid === ADMIN_UID); 
-
-            if (!canDelete) {
-                 showStatus("Deletion denied. Only the Admin can delete this entry.", 'text-red-500');
-                 return;
             }
 
             try {
@@ -238,6 +254,24 @@
         };
 
         /**
+         * Returns Tailwind CSS classes for a given status.
+         * @param {string} status - The current status string.
+         * @returns {string} Tailwind classes for background and text.
+         */
+        function getStatusClasses(status) {
+            switch (status) {
+                case 'Pending':
+                    return 'bg-yellow-100 text-yellow-800 border-yellow-500';
+                case 'Assigned':
+                    return 'bg-blue-100 text-blue-800 border-blue-500';
+                case 'Completed':
+                    return 'bg-green-100 text-green-800 border-green-500';
+                default:
+                    return 'bg-gray-100 text-gray-600 border-gray-400';
+            }
+        }
+
+        /**
          * Renders the board entries from the snapshot.
          * @param {object[]} data - Array of entry objects.
          */
@@ -248,45 +282,65 @@
             boardContainer.innerHTML = ''; // Clear existing list
             
             if (data.length === 0) {
-                boardContainer.innerHTML = '<p class="text-center text-gray-500 mt-8">The board is currently empty. Be the first to post!</p>';
+                boardContainer.innerHTML = '<p class="text-center text-gray-500 mt-8">The request board is currently empty.</p>';
                 return;
             }
 
             data.forEach(entry => {
                 const isCurrentUserAdmin = currentUserId === ADMIN_UID;
-                const isCurrentUsersEntry = currentUserId === entry.userId;
-                
-                // Determine if the delete button should be visible (only visible to Admin)
-                const showDeleteButton = isCurrentUserAdmin; 
-                
-                const deleteButtonHtml = showDeleteButton ? `
-                    <button onclick="deleteEntry('${entry.id}', '${entry.userId}')" 
-                            class="ml-4 p-2 text-xs bg-red-100 text-red-600 hover:bg-red-200 rounded-full transition duration-150">
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3"></path></svg>
-                    </button>
-                ` : '';
+                const statusClasses = getStatusClasses(entry.status);
 
+                // --- Admin Status Control and Delete Buttons ---
+                let adminControlsHtml = '';
+                if (isCurrentUserAdmin) {
+                    const statusOptions = ['Pending', 'Assigned', 'Completed'];
+                    
+                    // Status Selector
+                    const statusSelector = statusOptions.map(s => 
+                        `<option value="${s}" ${entry.status === s ? 'selected' : ''}>${s}</option>`
+                    ).join('');
+
+                    adminControlsHtml = `
+                        <div class="flex items-center space-x-2 mt-3 pt-3 border-t border-gray-100">
+                            <select onchange="updateEntryStatus('${entry.id}', this.value)" 
+                                    class="p-2 text-sm border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500">
+                                ${statusSelector}
+                            </select>
+                            
+                            <!-- Delete Button (Admin Only) -->
+                            <button onclick="deleteEntry('${entry.id}')" 
+                                    class="p-2 text-xs bg-red-100 text-red-600 hover:bg-red-200 rounded-lg transition duration-150 shadow-sm"
+                                    title="Delete Request">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3"></path></svg>
+                            </button>
+                        </div>
+                    `;
+                }
+
+                // --- Main Card Rendering ---
                 const item = document.createElement('div');
-                item.className = 'bg-white p-4 mb-4 rounded-xl shadow-lg border-l-4 ' + (isCurrentUsersEntry ? 'border-indigo-400' : 'border-gray-200');
+                item.className = `bg-white p-5 mb-4 rounded-xl shadow-lg border-l-8 border-t-2 ${statusClasses.match(/border-\w+-\d+/)[0]}`;
                 
                 item.innerHTML = `
-                    <div class="flex justify-between items-start">
-                        <!-- Message Content -->
+                    <div class="flex justify-between items-start mb-3">
                         <div class="flex-grow">
-                            <p class="text-lg text-gray-800 break-words whitespace-pre-wrap">${entry.entryText}</p>
+                            <h3 class="text-lg font-bold text-gray-800 mb-2">Request by ${entry.userName}</h3>
+                            <p class="text-sm text-gray-500">Submitted at ${formatTime(entry.timestamp)}</p>
                         </div>
                         
-                        <!-- Actions (Delete) -->
-                        <div>
-                            ${deleteButtonHtml}
-                        </div>
+                        <!-- Status Badge (Visible to all) -->
+                        <span class="inline-flex items-center px-4 py-1 text-sm font-semibold rounded-full ${statusClasses.match(/bg-\w+-\d+/)[0]} ${statusClasses.match(/text-\w+-\d+/)[0]} shadow-md">
+                            ${entry.status}
+                        </span>
                     </div>
 
-                    <!-- Footer Info -->
-                    <div class="mt-2 pt-2 border-t border-gray-100 flex justify-between items-center text-xs text-gray-500">
-                        <span class="font-medium text-indigo-500">${entry.userName}</span>
-                        <span>${formatTime(entry.timestamp)}</span>
+                    <!-- Message Content -->
+                    <div class="bg-gray-50 p-3 rounded-lg border border-gray-200">
+                         <p class="text-gray-800 break-words whitespace-pre-wrap">${entry.entryText}</p>
                     </div>
+
+                    <!-- Admin Controls (Conditional) -->
+                    ${adminControlsHtml}
                 `;
                 boardContainer.appendChild(item);
             });
@@ -296,7 +350,6 @@
          * Sets up the real-time listener for the public board.
          */
         function listenToBoard() {
-            // If we are already listening, stop the old listener
             if (unsubscribe) {
                 unsubscribe();
             }
@@ -342,8 +395,8 @@
 
     <div class="max-w-4xl mx-auto">
         <header class="text-center mb-10">
-            <h1 class="text-4xl font-extrabold text-gray-900 tracking-tight">Public Real-Time Board</h1>
-            <p class="text-gray-500 mt-2">Post messages for all to see. Admin users can delete any entry.</p>
+            <h1 class="text-4xl font-extrabold text-gray-900 tracking-tight">Real-Time Request Manager</h1>
+            <p class="text-gray-500 mt-2">Users submit requests which are initially set to **Pending**. Admin can update the status.</p>
         </header>
 
         <!-- Status Message Area -->
@@ -351,7 +404,7 @@
 
         <!-- Authentication Section (Visible when logged out) -->
         <div id="auth-section" class="flex flex-col items-center p-8 bg-white rounded-xl shadow-2xl border border-gray-100">
-            <p class="text-xl font-medium text-gray-700 mb-6">Sign In to View and Contribute</p>
+            <p class="text-xl font-medium text-gray-700 mb-6">Sign In to Submit and Manage Requests</p>
             <button onclick="signInWithGoogle()"
                     class="flex items-center justify-center px-6 py-3 bg-indigo-600 text-white font-bold rounded-full shadow-lg hover:bg-indigo-700 transition duration-300 transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-indigo-500 focus:ring-opacity-50">
                 <svg class="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 24 24">
@@ -376,21 +429,21 @@
                 <form onsubmit="submitEntry(event)" class="space-y-4">
                     <textarea id="entry-input" rows="3" 
                               class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 resize-none text-gray-800"
-                              placeholder="What's on your mind?"></textarea>
+                              placeholder="Type your request or assignment need here."></textarea>
                     
                     <button type="submit" 
                             class="w-full px-4 py-2 bg-indigo-500 text-white font-semibold rounded-lg hover:bg-indigo-600 transition duration-200 shadow-md">
-                        Post to Board
+                        Submit Request
                     </button>
                 </form>
             </div>
 
             <!-- Real-Time Board Feed -->
             <div class="mt-8">
-                <h2 class="text-2xl font-bold text-gray-800 mb-6 border-b pb-2">Recent Posts</h2>
+                <h2 class="text-2xl font-bold text-gray-800 mb-6 border-b pb-2">Submitted Requests</h2>
                 <div id="board-container" class="scroll-container max-h-[60vh] overflow-y-auto">
-                    <!-- Board entries will be injected here in real-time -->
-                    <p class="text-center text-gray-400 p-8">Loading posts...</p>
+                    <!-- Request entries will be injected here in real-time -->
+                    <p class="text-center text-gray-400 p-8">Loading requests...</p>
                 </div>
             </div>
 
