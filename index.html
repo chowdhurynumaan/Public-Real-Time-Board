@@ -158,18 +158,26 @@
             currentUserId = user.uid;
             isUserAdmin = user.uid === ADMIN_UID;
             
+            const userDocRef = doc(db, USER_PERMISSIONS_PATH, user.uid);
+            const userDoc = await getDoc(userDocRef);
+
             if (isUserAdmin) {
                 userApprovalStatus = 'Approved'; // Admin always approved
+                
+                // CRITICAL FIX: If the Admin mistakenly has a 'Pending' document, delete it.
+                if (userDoc.exists() && userDoc.data().status === 'Pending') {
+                    await deleteDoc(userDocRef);
+                    console.log("Admin's spurious 'Pending' document was deleted.");
+                }
+                
                 // Start listening to pending users for the admin panel
                 listenToPendingUsers(); 
             } else {
-                const userDocRef = doc(db, USER_PERMISSIONS_PATH, user.uid);
-                const userDoc = await getDoc(userDocRef);
-
+                
                 if (userDoc.exists()) {
                     userApprovalStatus = userDoc.data().status;
                 } else {
-                    // New user: create a 'Pending' document
+                    // New standard user: create a 'Pending' document
                     await setDoc(userDocRef, { 
                         status: 'Pending', 
                         email: user.email,
