@@ -38,8 +38,9 @@
             appId: "1:954372453883:web:b2c708ef761f460725075e"
         };
 
-        // ADMIN UID (CONFIRMED from your last message)
-        const ADMIN_UID = "oNOj3VCr0fBhAVNukhHtkxv2s6uFaOm1";
+        // VITAL: PASTE YOUR CURRENT UID HERE. This is the only way to grant yourself admin access.
+        // It should be the UID displayed in the app that is currently stuck on "Access Pending".
+        const ADMIN_UID = "YBU7eFsqdsUq1C0dAhw6tOMIdGu2";
         // ----------------------------------------------------------------
 
         // Global variables provided by the environment (use a fallback for local testing)
@@ -174,17 +175,21 @@
             // --- CRITICAL ADMIN CHECK (PRIORITIZED) ---
             if (isUserAdmin) {
                 userApprovalStatus = 'Approved'; // Admin always approved
-                const userDoc = await getDoc(userDocRef);
+                console.log(`ADMIN detected! UID: ${user.uid}. Forcing 'Approved' status.`);
 
-                // If Admin somehow has a status document (e.g., set before the fix), delete it.
-                if (userDoc.exists()) {
-                    await deleteDoc(userDocRef);
-                    console.log("Admin status document found and deleted to ensure immediate access.");
-                }
+                // Attempt to delete any lingering 'Pending' status document asynchronously.
+                // We don't wait for this, as the admin logic is prioritized.
+                getDoc(userDocRef).then(userDoc => {
+                    if (userDoc.exists()) {
+                         deleteDoc(userDocRef)
+                            .then(() => console.log("Admin status document deleted successfully."))
+                            .catch(e => console.error("Failed to delete Admin status doc:", e));
+                    }
+                });
                 
                 // Set up the listeners and update view for the Admin
                 listenToPendingUsers(); 
-                updateAppView(); // MUST call updateAppView() to render the admin panel/board
+                updateAppView(); // IMMEDIATELY render the Admin view
                 return; 
             }
             // ------------------------------------------
@@ -207,6 +212,7 @@
             
             // Set up a listener for the standard user's *own* status changes
             unsubscribeUserStatus = onSnapshot(userDocRef, (docSnapshot) => {
+                // Ensure the document still exists (it might have been deleted by the admin path on a previous login)
                 if (docSnapshot.exists()) {
                     userApprovalStatus = docSnapshot.data().status;
                     updateAppView(); // Re-render the view when status changes (e.g., when Admin approves them)
@@ -241,7 +247,15 @@
             } else if (userApprovalStatus === 'Pending' || userApprovalStatus === 'Loading...') {
                 pendingSection.classList.remove('hidden');
                 document.getElementById('pending-status-text').textContent = userApprovalStatus;
-                clearListeners(); // Ensure board listener is stopped
+                // Only clear the board listener, keep the individual status listener if set
+                if (unsubscribeBoard) {
+                    unsubscribeBoard();
+                    unsubscribeBoard = null;
+                }
+                if (unsubscribePendingUsers) {
+                    unsubscribePendingUsers();
+                    unsubscribePendingUsers = null;
+                }
             }
         }
 
@@ -354,7 +368,7 @@
                 item.innerHTML = `
                     <div class="flex-grow">
                         <div class="font-semibold text-gray-800">${user.name || 'N/A'} (${user.email})</div>
-                        <div class="text-xs text-gray-500">UID: ${new Date(user.joinTimestamp).toLocaleString()}</div>
+                        <div class="text-xs text-gray-500">Joined: ${new Date(user.joinTimestamp).toLocaleString()}</div>
                          <div class="text-xs text-gray-400 font-mono break-all mt-1">${user.id}</div>
                     </div>
                     <button onclick="approveUser('${user.id}')" 
