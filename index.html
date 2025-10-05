@@ -20,11 +20,14 @@
             -ms-overflow-style: none;  /* IE and Edge */
             scrollbar-width: none;  /* Firefox */
         }
+        /* Style for fixed header in the user table */
+        #all-users-list table th {
+            z-index: 10;
+        }
     </style>
     <!-- Firebase SDKs -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        // *** Imports are unchanged, but we're changing the usage flow ***
         import { getAuth, GoogleAuthProvider, signInWithRedirect, onAuthStateChanged, signInWithCustomToken, signOut, getRedirectResult } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, addDoc, onSnapshot, query, orderBy, deleteDoc, doc, updateDoc, setLogLevel, getDoc, setDoc, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
@@ -67,6 +70,7 @@
         let unsubscribeBoard = null; // To hold the onSnapshot listener for the board
         let unsubscribePendingUsers = null; // To hold the onSnapshot listener for pending users
         let unsubscribeUserStatus = null; // To hold the onSnapshot listener for individual user status
+        let unsubscribeAllUsers = null; // NEW: To hold the onSnapshot listener for all users
 
         // --- Utility Functions ---
 
@@ -110,6 +114,10 @@
             if (unsubscribeUserStatus) { // Clear individual user status listener
                 unsubscribeUserStatus();
                 unsubscribeUserStatus = null;
+            }
+            if (unsubscribeAllUsers) { // NEW: Clear all users listener
+                unsubscribeAllUsers();
+                unsubscribeAllUsers = null;
             }
         }
 
@@ -188,6 +196,7 @@
                 
                 // Set up the listeners and update view for the Admin
                 listenToPendingUsers(); 
+                listenToAllUsers(); // NEW: Start listening for all users
                 updateAppView(); // IMMEDIATELY render the Admin view
                 return; 
             }
@@ -252,7 +261,11 @@
                 document.getElementById('pending-status-text').textContent = 'Approved'; 
                 listenToBoard(); // Always call listenToBoard when approved
 
-                if (isUserAdmin && adminPanel) listenToPendingUsers(); adminPanel.classList.remove('hidden');
+                if (isUserAdmin && adminPanel) {
+                    listenToPendingUsers(); 
+                    listenToAllUsers(); // Call listener for all users here
+                    adminPanel.classList.remove('hidden');
+                }
 
             } else if (userApprovalStatus === 'Pending' || userApprovalStatus === 'Loading...') {
                 pendingSection.classList.remove('hidden');
@@ -266,6 +279,10 @@
                 if (unsubscribePendingUsers) {
                     unsubscribePendingUsers();
                     unsubscribePendingUsers = null;
+                }
+                if (unsubscribeAllUsers) { // Clear all users listener
+                    unsubscribeAllUsers();
+                    unsubscribeAllUsers = null;
                 }
             }
         }
@@ -316,7 +333,7 @@
             }
         }
         
-        // --- Admin Approval Panel Logic ---
+        // --- Admin Approval and Management Panel Logic ---
 
         /**
          * ADMIN function to approve a pending user.
@@ -340,13 +357,33 @@
         };
 
         /**
+         * ADMIN function to permanently remove a user's access by deleting their permission document.
+         * Note: This does NOT delete the user's Firebase Auth account, but revokes application access.
+         * @param {string} userId - The user ID to remove.
+         */
+        window.removeUserAccess = async (userId) => {
+            if (!isUserAdmin || userId === currentUserId) {
+                showStatus("Admin removal denied. Cannot remove yourself or are not authorized.", 'text-red-500');
+                return;
+            }
+
+            try {
+                const docRef = doc(db, USER_PERMISSIONS_PATH, userId);
+                await deleteDoc(docRef);
+                showStatus(`User ${userId} access has been removed (permission document deleted).`, 'text-green-600');
+            } catch (e) {
+                console.error("Error removing user access: ", e);
+                showStatus("Failed to remove user access. Check console and security rules.", 'text-red-500');
+            }
+        };
+
+        /**
          * ADMIN: Sets up the real-time listener for pending user accounts.
          */
         function listenToPendingUsers() {
             if (!isUserAdmin) return;
             if (unsubscribePendingUsers) unsubscribePendingUsers();
 
-            // NOTE: This query requires a composite index on (status ASC, joinTimestamp DESC)
             const q = query(
                 collection(db, USER_PERMISSIONS_PATH), 
                 where("status", "==", "Pending"), 
@@ -361,8 +398,32 @@
                 renderPendingUsersPanel(pendingUsers);
             }, (error) => {
                 console.error("Error fetching pending users: ", error);
-                // We'll keep showStatus here to let the admin know if the index is still missing
-                showStatus("Failed to load pending users. (Check index requirement in console)", 'text-red-500');
+                showStatus("Failed to load pending users.", 'text-red-500');
+            });
+        }
+        
+        /**
+         * ADMIN: Sets up the real-time listener for ALL registered user accounts.
+         */
+        function listenToAllUsers() {
+            if (!isUserAdmin) return;
+            if (unsubscribeAllUsers) unsubscribeAllUsers();
+
+            // Query all documents in the user_permissions collection, sorted by join time.
+            const q = query(
+                collection(db, USER_PERMISSIONS_PATH), 
+                orderBy("joinTimestamp", "desc")
+            );
+
+            unsubscribeAllUsers = onSnapshot(q, (snapshot) => {
+                const allUsers = [];
+                snapshot.forEach((doc) => {
+                    allUsers.push({ id: doc.id, ...doc.data() });
+                });
+                renderAllUsersPanel(allUsers);
+            }, (error) => {
+                console.error("Error fetching all users: ", error);
+                showStatus("Failed to load all users.", 'text-red-500');
             });
         }
 
@@ -396,6 +457,67 @@
                 `;
                 container.appendChild(item);
             });
+        }
+
+        /**
+         * ADMIN: Renders the panel listing all registered users (Approved and Pending).
+         * @param {object[]} users - Array of user objects.
+         */
+        function renderAllUsersPanel(users) {
+            const container = document.getElementById('all-users-list');
+            if (!container) return;
+            
+            container.innerHTML = '';
+            if (users.length === 0) {
+                container.innerHTML = '<p class="text-center text-gray-500 p-4">No users registered yet.</p>';
+                return;
+            }
+
+            const tableHtml = `
+                <table class="min-w-full divide-y divide-gray-200">
+                    <thead class="bg-gray-50">
+                        <tr>
+                            <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-1/3">User (Name/Email)</th>
+                            <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">UID</th>
+                            <th class="px-3 py-2 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                            <th class="px-3 py-2 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-20">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody class="bg-white divide-y divide-gray-200">
+                        ${users.map(user => {
+                            const statusColor = user.status === 'Approved' ? 'bg-green-100 text-green-800' : 
+                                                user.status === 'Pending' ? 'bg-yellow-100 text-yellow-800' : 'bg-gray-100 text-gray-600';
+                            
+                            // Prevent accidental removal of self (the current admin)
+                            const removeDisabled = user.id === currentUserId ? 'disabled' : '';
+                            const removeTitle = user.id === currentUserId ? 'Cannot remove yourself' : 'Remove access for this user';
+
+                            return `
+                                <tr class="${user.id === currentUserId ? 'bg-indigo-50/50 font-semibold' : 'hover:bg-gray-50'}">
+                                    <td class="px-3 py-2 whitespace-nowrap">
+                                        <div class="text-sm font-medium text-gray-900">${user.name || 'N/A'}</div>
+                                        <div class="text-xs text-gray-500">${user.email || 'N/A'}</div>
+                                    </td>
+                                    <td class="px-3 py-2 text-xs font-mono text-gray-500 break-all">${user.id}</td>
+                                    <td class="px-3 py-2 whitespace-nowrap text-center">
+                                        <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${statusColor}">
+                                            ${user.status}
+                                        </span>
+                                    </td>
+                                    <td class="px-3 py-2 whitespace-nowrap text-center">
+                                        <button onclick="removeUserAccess('${user.id}')" 
+                                                class="p-1.5 text-xs bg-red-50 text-red-600 rounded-lg hover:bg-red-100 transition duration-150 ${removeDisabled ? 'opacity-50 cursor-not-allowed' : ''}"
+                                                ${removeDisabled} title="${removeTitle}">
+                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                                        </button>
+                                    </td>
+                                </tr>
+                            `;
+                        }).join('')}
+                    </tbody>
+                </table>
+            `;
+            container.innerHTML = tableHtml;
         }
 
         // --- Board Operations (Unchanged, but only runnable if Approved) ---
@@ -676,9 +798,17 @@
 
                 <!-- Admin Approval Panel (Only shown if Admin is logged in and is Approved) -->
                 <div id="admin-panel" class="hidden mt-6 pt-4 border-t border-red-100">
+                    
+                    <!-- Pending Users Section -->
                     <h2 class="text-xl font-bold text-red-600 mb-4">Admin: Pending User Approvals</h2>
-                    <div id="pending-users-list" class="max-h-60 overflow-y-auto">
+                    <div id="pending-users-list" class="max-h-60 overflow-y-auto mb-8 pb-4 border-b border-gray-100">
                         <p class="text-center text-gray-400 p-4">Loading pending users...</p>
+                    </div>
+
+                    <!-- NEW: All Registered Users Section -->
+                    <h2 class="text-xl font-bold text-indigo-700 mb-4 pt-4 border-t border-indigo-100">Admin: All Registered Users</h2>
+                    <div id="all-users-list" class="scroll-container max-h-96 overflow-y-auto rounded-lg border border-gray-200 shadow-inner">
+                        <p class="text-center text-gray-400 p-4">Loading all users...</p>
                     </div>
                 </div>
 
