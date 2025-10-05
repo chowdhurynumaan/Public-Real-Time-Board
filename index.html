@@ -158,43 +158,49 @@
             currentUserId = user.uid;
             isUserAdmin = user.uid === ADMIN_UID;
             
-            const userDocRef = doc(db, USER_PERMISSIONS_PATH, user.uid);
-            const userDoc = await getDoc(userDocRef);
-
+            // --- CRITICAL ADMIN CHECK (PRIORITIZED) ---
             if (isUserAdmin) {
                 userApprovalStatus = 'Approved'; // Admin always approved
-                
-                // CRITICAL FIX: If the Admin mistakenly has a 'Pending' document, delete it.
-                if (userDoc.exists() && userDoc.data().status === 'Pending') {
-                    await deleteDoc(userDocRef);
-                    console.log("Admin's spurious 'Pending' document was deleted.");
-                }
-                
-                // Start listening to pending users for the admin panel
-                listenToPendingUsers(); 
-            } else {
-                
+                const userDocRef = doc(db, USER_PERMISSIONS_PATH, user.uid);
+                const userDoc = await getDoc(userDocRef);
+
+                // If Admin somehow has a status document, delete it immediately to prevent future issues.
                 if (userDoc.exists()) {
-                    userApprovalStatus = userDoc.data().status;
-                } else {
-                    // New standard user: create a 'Pending' document
-                    await setDoc(userDocRef, { 
-                        status: 'Pending', 
-                        email: user.email,
-                        name: user.displayName,
-                        joinTimestamp: Date.now()
-                    });
-                    userApprovalStatus = 'Pending';
+                    await deleteDoc(userDocRef);
+                    console.log("Admin status document found and deleted to ensure immediate access.");
                 }
                 
-                // Set up a listener for the user's *own* status changes
-                onSnapshot(userDocRef, (docSnapshot) => {
-                    if (docSnapshot.exists()) {
-                        userApprovalStatus = docSnapshot.data().status;
-                        updateAppView(); // Re-render the view when status changes (e.g., when Admin approves them)
-                    }
-                });
+                // Set up the listeners and update view for the Admin
+                listenToPendingUsers(); 
+                updateAppView();
+                return; // IMPORTANT: Exit the function for the Admin immediately
             }
+            // ------------------------------------------
+
+            // --- STANDARD USER LOGIC ---
+            const userDocRef = doc(db, USER_PERMISSIONS_PATH, user.uid);
+            const userDoc = await getDoc(userDocRef);
+            
+            if (userDoc.exists()) {
+                userApprovalStatus = userDoc.data().status;
+            } else {
+                // New standard user: create a 'Pending' document
+                await setDoc(userDocRef, { 
+                    status: 'Pending', 
+                    email: user.email,
+                    name: user.displayName,
+                    joinTimestamp: Date.now()
+                });
+                userApprovalStatus = 'Pending';
+            }
+            
+            // Set up a listener for the user's *own* status changes
+            onSnapshot(userDocRef, (docSnapshot) => {
+                if (docSnapshot.exists()) {
+                    userApprovalStatus = docSnapshot.data().status;
+                    updateAppView(); // Re-render the view when status changes (e.g., when Admin approves them)
+                }
+            });
             
             updateAppView();
         }
