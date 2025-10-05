@@ -292,6 +292,11 @@
          */
         function updateUserDisplay(user) {
              const userDisplay = document.getElementById('user-display');
+             
+             if (!user) {
+                 userDisplay.innerHTML = `<p class="text-center text-gray-500">Not signed in.</p>`;
+                 return;
+             }
 
              userDisplay.innerHTML = `
                 <div class="flex justify-between items-center">
@@ -706,20 +711,15 @@
 
 
         // --- RESTRUCTURED INITIALIZATION AND AUTH LISTENER (FIX FOR REDIRECT LOOP) ---
+        // CRITICAL FIX IMPLEMENTED IN initializeAppFlow
 
         /**
-         * Sets up the primary Auth State Listener.
+         * Sets up the primary Auth State Listener for existing sessions and sign-outs.
          */
         function setupAuthListener() {
             onAuthStateChanged(auth, (user) => {
-                // Main Logic: Update UI based on current user state
-                if (user) {
-                    // This handles successful sign-in from custom token, redirect, or previous session
-                    updateUI(user);
-                } else {
-                    // This handles sign-out or initial logged-out state
-                    updateUI(null);
-                }
+                console.log(`onAuthStateChanged fired. User: ${user ? user.uid : 'null'}`);
+                updateUI(user);
             });
         }
         
@@ -728,7 +728,6 @@
          */
         async function initializeAppFlow() {
             // 1. Initial Custom Token Sign-in attempt (Canvas environment)
-            // This runs first to try and establish a session from the canvas token.
             if (initialAuthToken) {
                  try {
                     await signInWithCustomToken(auth, initialAuthToken);
@@ -739,20 +738,25 @@
             }
             
             // 2. Handle redirect result (if the page load is a return from Google Sign-in)
-            // It MUST be called on every page load to check for a pending result.
             try {
                 const result = await getRedirectResult(auth);
                 if (result) {
-                    // If a result exists, the user is signed in. 
-                    console.log("Redirect sign-in successful:", result.user.displayName);
-                    // The onAuthStateChanged listener will handle the UI update immediately.
+                    const user = result.user;
+                    console.log(`Redirect sign-in successful, processing user: ${user.displayName}`);
+                    
+                    // CRITICAL FIX: Explicitly handle the UI update immediately 
+                    // and RETURN to prevent the race condition with onAuthStateChanged.
+                    updateUI(user); 
+                    setupAuthListener(); // Start listener for future sign-outs/changes
+                    return; 
                 }
             } catch (error) {
                 console.error("Redirect sign-in error:", error);
-                showStatus(`Sign-in failed after redirect: ${error.code}. Try again.`, 'text-red-600');
+                // Auth error can sometimes be a loop cause (e.g., storage issue). Log it.
+                showStatus(`Sign-in failed after redirect: ${error.code}. Check console.`, 'text-red-600');
             }
             
-            // 3. Set up the main listener for all subsequent state changes
+            // 3. Set up the main listener for all subsequent state changes (Only runs if no redirect result was processed)
             setupAuthListener();
         }
 
@@ -762,7 +766,6 @@
     </script>
 </head>
 <body class="min-h-screen p-4 sm:p-8">
-<!-- ... (rest of HTML body is unchanged) ... -->
     <div class="max-w-4xl mx-auto">
         <header class="text-center mb-10">
             <h1 class="text-4xl font-extrabold text-gray-900 tracking-tight">Real-Time Request Manager</h1>
