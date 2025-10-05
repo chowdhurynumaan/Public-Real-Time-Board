@@ -24,7 +24,8 @@
     <!-- Firebase SDKs -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signInWithCustomToken, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        // *** IMPORTANT CHANGE: Swapping signInWithPopup for signInWithRedirect and adding getRedirectResult ***
+        import { getAuth, GoogleAuthProvider, signInWithRedirect, onAuthStateChanged, signInWithCustomToken, signOut, getRedirectResult } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, addDoc, onSnapshot, query, orderBy, deleteDoc, doc, updateDoc, setLogLevel, getDoc, setDoc, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // IMPORTANT: Configuration is now set!
@@ -39,7 +40,6 @@
         };
 
         // VITAL: PASTE YOUR CURRENT UID HERE. This is the only way to grant yourself admin access.
-        // It should be the UID displayed in the app that is currently stuck on "Access Pending".
         const ADMIN_UID = "YBU7eFsqdsUq1C0dAhw6tOMIdGu2";
         // ----------------------------------------------------------------
 
@@ -116,12 +116,13 @@
         // --- Authentication Logic ---
 
         /**
-         * Handles Google Sign-In attempt and critical error handling.
+         * Handles Google Sign-In attempt using a redirect, which avoids COOP errors in iframes.
          */
         window.signInWithGoogle = async () => {
             try {
-                // Sign-in will trigger onAuthStateChanged
-                await signInWithPopup(auth, provider);
+                // Use signInWithRedirect instead of signInWithPopup
+                await signInWithRedirect(auth, provider);
+                // The browser will be redirected to the Google sign-in page.
             } catch (error) {
                 console.error("Authentication Error:", error);
                 const errorCode = error.code;
@@ -129,8 +130,6 @@
 
                 if (errorCode === 'auth/unauthorized-domain') {
                     errorMessage = "🛑 Unauthorized Domain. Please add the current domain to the 'Authorized domains' list in your Firebase Authentication settings.";
-                } else if (errorCode === 'auth/popup-closed-by-user') {
-                    errorMessage = "Sign-in cancelled by user.";
                 } else {
                     errorMessage = `Error: ${errorCode}. Please check console for details.`;
                 }
@@ -218,8 +217,6 @@
                     if (userApprovalStatus !== newStatus) {
                         userApprovalStatus = newStatus;
                         
-                        // ** CRITICAL FIX: Explicitly call listenToBoard and updateAppView 
-                        // when status changes from Pending to Approved
                         if (userApprovalStatus === 'Approved') {
                             listenToBoard();
                         }
@@ -251,12 +248,11 @@
             if (userApprovalStatus === 'Approved') {
                 boardSection.classList.remove('hidden');
                 
-                // ** UPDATED FIX: Ensure any loading/pending status text is cleared 
-                // and the board listener is explicitly started every time we transition to Approved.
+                // Ensure any loading/pending status text is cleared 
                 document.getElementById('pending-status-text').textContent = 'Approved'; 
                 listenToBoard(); // Always call listenToBoard when approved
 
-                if (isUserAdmin && adminPanel) adminPanel.classList.remove('hidden');
+                if (isUserAdmin && adminPanel) listenToPendingUsers(); adminPanel.classList.remove('hidden');
 
             } else if (userApprovalStatus === 'Pending' || userApprovalStatus === 'Loading...') {
                 pendingSection.classList.remove('hidden');
@@ -350,7 +346,12 @@
             if (!isUserAdmin) return;
             if (unsubscribePendingUsers) unsubscribePendingUsers();
 
-            const q = query(collection(db, USER_PERMISSIONS_PATH), where("status", "==", "Pending"), orderBy("joinTimestamp", "desc"));
+            // NOTE: This query requires a composite index on (status ASC, joinTimestamp DESC)
+            const q = query(
+                collection(db, USER_PERMISSIONS_PATH), 
+                where("status", "==", "Pending"), 
+                orderBy("joinTimestamp", "desc")
+            );
 
             unsubscribePendingUsers = onSnapshot(q, (snapshot) => {
                 const pendingUsers = [];
@@ -360,7 +361,8 @@
                 renderPendingUsersPanel(pendingUsers);
             }, (error) => {
                 console.error("Error fetching pending users: ", error);
-                showStatus("Failed to load pending users.", 'text-red-500');
+                // We'll keep showStatus here to let the admin know if the index is still missing
+                showStatus("Failed to load pending users. (Check index requirement in console)", 'text-red-500');
             });
         }
 
@@ -565,6 +567,7 @@
                 unsubscribeBoard();
             }
 
+            // NOTE: This uses a simple orderBy, which only requires a single-field index on 'timestamp' (which Firestore usually handles automatically)
             const q = query(collection(db, BOARD_PATH), orderBy("timestamp", "desc"));
 
             unsubscribeBoard = onSnapshot(q, (snapshot) => {
@@ -581,14 +584,25 @@
 
         // --- Initialization and Auth Listener ---
 
-        let authReady = false; // Add back the authReady flag for token handling
+        let authReady = false; 
 
         /**
-         * Attempts to sign in with the custom token if available (Canvas requirement)
-         * and sets up the primary authentication state listener.
+         * Attempts to sign in with the custom token and handles redirect results.
          */
         onAuthStateChanged(auth, async (user) => {
-            // 1. Initial Custom Token Sign-in attempt (Canvas environment)
+            // 1. Handle redirect result first (if user was sent to Google and came back)
+            try {
+                const result = await getRedirectResult(auth);
+                if (result) {
+                    console.log("Redirect sign-in successful:", result.user.displayName);
+                    // The rest of the sign-in flow is handled by the regular 'user' check below
+                }
+            } catch (error) {
+                console.error("Redirect sign-in error:", error);
+                showStatus(`Sign-in failed after redirect: ${error.code}`, 'text-red-600');
+            }
+
+            // 2. Initial Custom Token Sign-in attempt (Canvas environment)
             if (initialAuthToken && !authReady) {
                  try {
                     // This attempt will trigger a second onAuthStateChanged call if successful
@@ -598,15 +612,14 @@
                  }
             }
             
-            // 2. Main Logic: Update UI based on current user state
-            // If user is null (logged out), updateUI handles clearing the screen.
+            // 3. Main Logic: Update UI based on current user state
             if (user) {
                 updateUI(user);
             } else {
                 updateUI(null);
             }
 
-            // 3. Mark Auth as ready
+            // 4. Mark Auth as ready
             authReady = true;
         });
 
