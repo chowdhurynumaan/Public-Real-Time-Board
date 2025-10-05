@@ -158,13 +158,14 @@
             currentUserId = user.uid;
             isUserAdmin = user.uid === ADMIN_UID;
             
+            const userDocRef = doc(db, USER_PERMISSIONS_PATH, user.uid);
+
             // --- CRITICAL ADMIN CHECK (PRIORITIZED) ---
             if (isUserAdmin) {
                 userApprovalStatus = 'Approved'; // Admin always approved
-                const userDocRef = doc(db, USER_PERMISSIONS_PATH, user.uid);
                 const userDoc = await getDoc(userDocRef);
 
-                // If Admin somehow has a status document, delete it immediately to prevent future issues.
+                // If Admin somehow has a status document (e.g., set before the fix), delete it.
                 if (userDoc.exists()) {
                     await deleteDoc(userDocRef);
                     console.log("Admin status document found and deleted to ensure immediate access.");
@@ -172,13 +173,12 @@
                 
                 // Set up the listeners and update view for the Admin
                 listenToPendingUsers(); 
-                updateAppView();
+                updateAppView(); // <-- CALL UPDATE VIEW HERE
                 return; // IMPORTANT: Exit the function for the Admin immediately
             }
             // ------------------------------------------
 
             // --- STANDARD USER LOGIC ---
-            const userDocRef = doc(db, USER_PERMISSIONS_PATH, user.uid);
             const userDoc = await getDoc(userDocRef);
             
             if (userDoc.exists()) {
@@ -202,7 +202,7 @@
                 }
             });
             
-            updateAppView();
+            updateAppView(); // <-- CALL UPDATE VIEW HERE for standard users
         }
 
         /**
