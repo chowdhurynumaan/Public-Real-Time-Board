@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-Time Public Board (Admin Secured)</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load Inter font -->
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f7f9fb;
+        }
+        .scroll-container::-webkit-scrollbar {
+            display: none; /* Hide scrollbar for Chrome, Safari and Opera */
+        }
+        .scroll-container {
+            -ms-overflow-style: none;  /* IE and Edge */
+            scrollbar-width: none;  /* Firefox */
+        }
+    </style>
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, onSnapshot, query, orderBy, deleteDoc, doc, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // IMPORTANT: Configuration is now set!
+        // ----------------------------------------------------------------
+        const FIREBASE_CONFIG = {
+            apiKey: "AIzaSyAOjEXK35Gy4f9m5ItVhB3nk9B_nNwfc5U",
+            authDomain: "schoolstream-sny5k.firebaseapp.com",
+            projectId: "schoolstream-sny5k",
+            storageBucket: "schoolstream-sny5k.firebasestorage.app",
+            messagingSenderId: "954372453883",
+            appId: "1:954372453883:web:b2c708ef761f460725075e"
+        };
+
+        // CRITICAL: Replace this with the actual UID of your Admin user.
+        const ADMIN_UID = "YOUR_ADMIN_UID_HERE"; // <-- REPLACE ME
+        // ----------------------------------------------------------------
+
+        // Global variables provided by the environment (use a fallback for local testing)
+        const appId = typeof __app_id !== 'undefined' ? __app_id : FIREBASE_CONFIG.projectId || 'default-project-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : FIREBASE_CONFIG;
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        setLogLevel('Debug');
+
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const BOARD_PATH = `/artifacts/${appId}/public/data/shared-public-board`;
+        const provider = new GoogleAuthProvider();
+
+        let currentUserId = null;
+        let authReady = false;
+
+        // --- Utility Functions ---
+
+        /**
+         * Converts a raw timestamp to a readable time string.
+         * @param {number} timestamp - The milliseconds since epoch.
+         * @returns {string} Formatted time string.
+         */
+        function formatTime(timestamp) {
+            return new Date(timestamp).toLocaleTimeString('en-US', {
+                hour: '2-digit', minute: '2-digit'
+            });
+        }
+
+        /**
+         * Displays a temporary message in the UI status area.
+         * @param {string} message - The message to display.
+         * @param {string} color - Tailwind color class (e.g., 'text-red-600').
+         */
+        function showStatus(message, color = 'text-gray-600') {
+            const statusEl = document.getElementById('status-message');
+            if (statusEl) {
+                statusEl.className = `${color} text-sm mt-2`;
+                statusEl.textContent = message;
+                setTimeout(() => statusEl.textContent = '', 5000);
+            }
+        }
+
+        // --- Authentication Logic ---
+
+        /**
+         * Handles Google Sign-In attempt and critical error handling.
+         */
+        window.signInWithGoogle = async () => {
+            try {
+                const result = await signInWithPopup(auth, provider);
+                showStatus(`Signed in successfully as ${result.user.displayName}!`, 'text-green-600');
+            } catch (error) {
+                console.error("Authentication Error:", error);
+                const errorCode = error.code;
+                let errorMessage = "An unknown authentication error occurred.";
+
+                if (errorCode === 'auth/unauthorized-domain') {
+                    errorMessage = "🛑 Unauthorized Domain. Please add the current domain to the 'Authorized domains' list in your Firebase Authentication settings.";
+                } else if (errorCode === 'auth/popup-closed-by-user') {
+                    errorMessage = "Sign-in cancelled by user.";
+                } else {
+                    errorMessage = `Error: ${errorCode}. Please check console for details.`;
+                }
+
+                showStatus(errorMessage, 'text-red-600 font-semibold');
+            }
+        };
+
+        /**
+         * Handles User Interface changes based on authentication state.
+         * @param {object | null} user - The Firebase user object or null if logged out.
+         */
+        function updateUI(user) {
+            const authSection = document.getElementById('auth-section');
+            const boardSection = document.getElementById('board-section');
+            const userDisplay = document.getElementById('user-display');
+
+            if (user) {
+                currentUserId = user.uid;
+                authSection.classList.add('hidden');
+                boardSection.classList.remove('hidden');
+                userDisplay.innerHTML = `
+                    <div class="text-sm font-semibold text-gray-700">Logged in as:</div>
+                    <div class="text-xl font-bold text-indigo-700">${user.displayName}</div>
+                    <div class="text-sm text-gray-500 mb-2">${user.email}</div>
+                    <div class="text-xs text-gray-400 font-mono break-all mt-1 p-1 bg-gray-100 rounded-lg">
+                        UID: ${user.uid}
+                    </div>
+                `;
+                // Start listening to the board only when the user is logged in
+                if (authReady) {
+                    listenToBoard();
+                }
+            } else {
+                currentUserId = null;
+                authSection.classList.remove('hidden');
+                boardSection.classList.add('hidden');
+            }
+        }
+
+        // --- Core App Logic ---
+
+        /**
+         * Handles the submission of a new board entry.
+         */
+        window.submitEntry = async (event) => {
+            event.preventDefault();
+            const entryInput = document.getElementById('entry-input');
+            const entryText = entryInput.value.trim();
+            if (!entryText || !auth.currentUser) {
+                showStatus("Please enter content and ensure you are logged in.", 'text-red-500');
+                return;
+            }
+
+            try {
+                await addDoc(collection(db, BOARD_PATH), {
+                    entryText: entryText,
+                    timestamp: Date.now(),
+                    userName: auth.currentUser.displayName || 'Anonymous',
+                    userEmail: auth.currentUser.email || 'N/A',
+                    userId: auth.currentUser.uid
+                });
+                entryInput.value = ''; // Clear input on success
+                showStatus("Entry posted successfully!", 'text-green-600');
+            } catch (e) {
+                console.error("Error adding document: ", e);
+                showStatus("Failed to post entry. Check console for details.", 'text-red-500');
+            }
+        };
+
+        /**
+         * Handles the deletion of a board entry.
+         * @param {string} docId - The Firestore document ID to delete.
+         * @param {string} entryUserId - The UID of the user who created the entry.
+         */
+        window.deleteEntry = async (docId, entryUserId) => {
+            if (!auth.currentUser) {
+                showStatus("You must be logged in to delete entries.", 'text-red-500');
+                return;
+            }
+
+            // Check for Admin status or self-delete permission (though self-delete is enforced by rules)
+            const canDelete = (auth.currentUser.uid === ADMIN_UID) || (auth.currentUser.uid === entryUserId);
+
+            if (!canDelete) {
+                 showStatus("Deletion denied. Only the Admin or the entry's author can delete this.", 'text-red-500');
+                 return;
+            }
+
+            try {
+                await deleteDoc(doc(db, BOARD_PATH, docId));
+                showStatus("Entry deleted successfully!", 'text-green-600');
+            } catch (e) {
+                console.error("Error deleting document: ", e);
+                showStatus("Failed to delete entry. Check console for details.", 'text-red-500');
+            }
+        };
+
+        /**
+         * Renders the board entries from the snapshot.
+         * @param {object[]} data - Array of entry objects.
+         */
+        function renderBoard(data) {
+            const boardContainer = document.getElementById('board-container');
+            if (!boardContainer) return;
+
+            boardContainer.innerHTML = ''; // Clear existing list
+            
+            if (data.length === 0) {
+                boardContainer.innerHTML = '<p class="text-center text-gray-500 mt-8">The board is currently empty. Be the first to post!</p>';
+                return;
+            }
+
+            data.forEach(entry => {
+                const isCurrentUserAdmin = currentUserId === ADMIN_UID;
+                const isCurrentUsersEntry = currentUserId === entry.userId;
+                
+                // Determine if the delete button should be visible
+                const showDeleteButton = isCurrentUserAdmin; 
+                
+                // Only the Admin (as per app logic) gets the delete button displayed
+                const deleteButtonHtml = showDeleteButton ? `
+                    <button onclick="deleteEntry('${entry.id}', '${entry.userId}')" 
+                            class="ml-4 p-2 text-xs bg-red-100 text-red-600 hover:bg-red-200 rounded-full transition duration-150">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3"></path></svg>
+                    </button>
+                ` : '';
+
+                const item = document.createElement('div');
+                item.className = 'bg-white p-4 mb-4 rounded-xl shadow-lg border-l-4 ' + (isCurrentUsersEntry ? 'border-indigo-400' : 'border-gray-200');
+                
+                item.innerHTML = `
+                    <div class="flex justify-between items-start">
+                        <!-- Message Content -->
+                        <div class="flex-grow">
+                            <p class="text-lg text-gray-800 break-words whitespace-pre-wrap">${entry.entryText}</p>
+                        </div>
+                        
+                        <!-- Actions (Delete) -->
+                        <div>
+                            ${deleteButtonHtml}
+                        </div>
+                    </div>
+
+                    <!-- Footer Info -->
+                    <div class="mt-2 pt-2 border-t border-gray-100 flex justify-between items-center text-xs text-gray-500">
+                        <span class="font-medium text-indigo-500">${entry.userName}</span>
+                        <span>${formatTime(entry.timestamp)}</span>
+                    </div>
+                `;
+                boardContainer.appendChild(item);
+            });
+        }
+
+        /**
+         * Sets up the real-time listener for the public board.
+         */
+        function listenToBoard() {
+            // Query: order by timestamp descending for latest first
+            const q = query(collection(db, BOARD_PATH), orderBy("timestamp", "desc"));
+
+            // Real-time listener
+            onSnapshot(q, (snapshot) => {
+                const entries = [];
+                snapshot.forEach((doc) => {
+                    entries.push({ id: doc.id, ...doc.data() });
+                });
+                renderBoard(entries);
+            }, (error) => {
+                console.error("Error fetching board data: ", error);
+                showStatus("Failed to load real-time data.", 'text-red-500');
+            });
+        }
+
+        // --- Initialization and Auth Listener ---
+
+        /**
+         * Attempts to sign in with the custom token if available (Canvas requirement)
+         * and sets up the primary authentication state listener.
+         */
+        onAuthStateChanged(auth, async (user) => {
+            if (initialAuthToken && !authReady) {
+                 try {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                 } catch (e) {
+                    console.error("Custom token sign-in failed:", e);
+                 }
+            }
+            // Update the UI after the token check or standard auth change
+            updateUI(auth.currentUser);
+            authReady = true;
+        });
+
+    </script>
+</head>
+<body class="min-h-screen p-4 sm:p-8">
+
+    <div class="max-w-4xl mx-auto">
+        <header class="text-center mb-10">
+            <h1 class="text-4xl font-extrabold text-gray-900 tracking-tight">Public Real-Time Board</h1>
+            <p class="text-gray-500 mt-2">Post messages for all to see. Admin users can delete any entry.</p>
+        </header>
+
+        <!-- Status Message Area -->
+        <div id="status-message" class="text-center h-6 mb-4"></div>
+
+        <!-- Authentication Section (Visible when logged out) -->
+        <div id="auth-section" class="flex flex-col items-center p-8 bg-white rounded-xl shadow-2xl border border-gray-100">
+            <p class="text-xl font-medium text-gray-700 mb-6">Sign In to View and Contribute</p>
+            <button onclick="signInWithGoogle()"
+                    class="flex items-center justify-center px-6 py-3 bg-indigo-600 text-white font-bold rounded-full shadow-lg hover:bg-indigo-700 transition duration-300 transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-indigo-500 focus:ring-opacity-50">
+                <svg class="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M22.5 12.58c0-.77-.07-1.52-.2-2.25H12v4.51h6.15c-.27 1.35-.97 2.5-2.09 3.32v3.5h4.5v-3.5c1.47-1.29 2.37-3.21 2.37-5.08z"/>
+                    <path d="M12 23c3.27 0 6.02-1.08 8.03-2.92l-4.5-3.5c-1.25.84-2.88 1.34-4.53 1.34-3.52 0-6.44-2.37-7.49-5.59H0v3.5c2.01 4.3 6.64 7.51 12 7.51z"/>
+                    <path d="M4.51 10.92c-.22-.65-.34-1.34-.34-2.05s.12-1.4.34-2.05V3.33H0v3.5c.67 1.33 1.76 2.45 3.09 3.33z"/>
+                    <path d="M12 4.48c1.94 0 3.68.65 5.06 1.95L19 3c-1.63-1.42-3.8-2.48-6.5-2.48-5.36 0-10.03 3.21-12 7.51L4.51 10.9c1.05-3.22 3.97-5.59 7.49-5.59z"/>
+                </svg>
+                Sign In with Google
+            </button>
+        </div>
+
+        <!-- Board Section (Visible when logged in) -->
+        <div id="board-section" class="hidden">
+            
+            <!-- User Info and Post Form -->
+            <div class="bg-white p-6 rounded-xl shadow-xl mb-8">
+                <div id="user-display" class="mb-4 pb-4 border-b border-gray-100">
+                    <!-- User details will be injected here -->
+                </div>
+
+                <form onsubmit="submitEntry(event)" class="space-y-4">
+                    <textarea id="entry-input" rows="3" 
+                              class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 resize-none text-gray-800"
+                              placeholder="What's on your mind?"></textarea>
+                    
+                    <button type="submit" 
+                            class="w-full px-4 py-2 bg-indigo-500 text-white font-semibold rounded-lg hover:bg-indigo-600 transition duration-200 shadow-md">
+                        Post to Board
+                    </button>
+                </form>
+            </div>
+
+            <!-- Real-Time Board Feed -->
+            <div class="mt-8">
+                <h2 class="text-2xl font-bold text-gray-800 mb-6 border-b pb-2">Recent Posts</h2>
+                <div id="board-container" class="scroll-container max-h-[60vh] overflow-y-auto">
+                    <!-- Board entries will be injected here in real-time -->
+                    <p class="text-center text-gray-400 p-8">Loading posts...</p>
+                </div>
+            </div>
+
+        </div>
+
+    </div>
+
+</body>
+</html>
