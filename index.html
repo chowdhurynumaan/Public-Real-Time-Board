@@ -8,7 +8,7 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Load Inter font -->
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        @import url('https://fonts.fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
         body {
             font-family: 'Inter', sans-serif;
             background-color: #f7f9fb;
@@ -28,7 +28,6 @@
     <!-- Firebase SDKs -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        // REMOVED: GoogleAuthProvider, signInWithRedirect, getRedirectResult
         import { getAuth, onAuthStateChanged, signInWithCustomToken, signOut, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, addDoc, onSnapshot, query, orderBy, deleteDoc, doc, updateDoc, setLogLevel, getDoc, setDoc, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
@@ -43,8 +42,10 @@
             appId: "1:954372453883:web:b2c708ef761f460725075e"
         };
 
-        // VITAL: PASTE YOUR CURRENT UID HERE. This is the only way to grant yourself admin access.
-        const ADMIN_UID = "YBU7eFsqdsUq1C0dAhw6tOMIdGu2";
+        // VITAL: PASTE YOUR CURRENT UID HERE. 
+        // ----------------------------------------------------------------
+        // ACTION REQUIRED: Replace 'YBU7eFsqdsUq1C0dAhw6tOMIdGu2' with your actual Firebase UID
+        const ADMIN_UID = "YBU7eFsqdsUq1C0dAhw6tOMIdGu2"; 
         // ----------------------------------------------------------------
 
         // Global variables provided by the environment (use a fallback for local testing)
@@ -62,8 +63,6 @@
         // Firestore Paths
         const BOARD_PATH = `/artifacts/${appId}/public/data/shared-public-board`;
         const USER_PERMISSIONS_PATH = `/artifacts/${appId}/public/data/user_permissions`; 
-
-        // REMOVED: const provider = new GoogleAuthProvider();
 
         let currentUserId = null;
         let isUserAdmin = false;
@@ -124,8 +123,6 @@
 
         // --- Authentication Logic ---
 
-        // REMOVED: window.signInWithGoogle - Replaced by automatic environment sign-in
-
         /**
          * Handles Sign-Out.
          */
@@ -163,6 +160,7 @@
                 userApprovalStatus = 'Approved'; 
                 console.log(`ADMIN detected! UID: ${user.uid}. Forcing 'Approved' status.`);
 
+                // Admin doc removal is purely for cleanup, errors here are non-critical
                 getDoc(userDocRef).then(userDoc => {
                     if (userDoc.exists()) {
                          deleteDoc(userDocRef)
@@ -306,7 +304,7 @@
             } else {
                 currentUserId = null;
                 isUserAdmin = false;
-                userApprovalStatus = 'Unauthenticated'; // Changed from 'Loading...'
+                userApprovalStatus = 'Unauthenticated'; 
                 authSection.classList.remove('hidden');
                 loggedInSection.classList.add('hidden');
                 clearListeners(); 
@@ -372,7 +370,7 @@
 
             unsubscribePendingUsers = onSnapshot(q, (snapshot) => {
                 const pendingUsers = [];
-                snapshot.forEach((doc) => {
+                    snapshot.forEach((doc) => {
                     pendingUsers.push({ id: doc.id, ...doc.data() });
                 });
                 // Client-side sort by timestamp
@@ -691,14 +689,26 @@
                     await signInWithCustomToken(auth, initialAuthToken);
                     console.log("Canvas custom token sign-in successful.");
                  } catch (e) {
-                    // Fallback to anonymous if token fails (e.g., token expired or invalid)
-                    await signInAnonymously(auth);
-                    console.log("Custom token sign-in failed, proceeding with anonymous sign-in.");
+                    // Custom token failed, try the mandated anonymous fallback
+                    console.warn("Custom token sign-in failed. Attempting anonymous fallback. Error:", e);
+                    try {
+                         await signInAnonymously(auth);
+                         console.log("Anonymous sign-in successful.");
+                    } catch (anonError) {
+                        // Catch the (auth/admin-restricted-operation) error here to prevent app crash
+                        console.error("Anonymous sign-in failed due to project restrictions. App will remain logged out.", anonError);
+                    }
                  }
             } else {
                  // 2. Fallback to Anonymous Sign-in if no token is available
-                 await signInAnonymously(auth);
-                 console.log("No custom token found, proceeding with anonymous sign-in.");
+                 console.log("No custom token found. Attempting anonymous sign-in (as required by environment).");
+                 try {
+                     await signInAnonymously(auth);
+                     console.log("Anonymous sign-in successful.");
+                 } catch (anonError) {
+                     // Catch the (auth/admin-restricted-operation) error here to prevent app crash
+                     console.error("Anonymous sign-in failed due to project restrictions. App will remain logged out.", anonError);
+                 }
             }
             
             // 3. Set up the main listener for all subsequent state changes
@@ -729,7 +739,6 @@
             <div id="auth-status-msg" class="text-red-500 text-center font-medium">
                 Authentication is automatic using the secure environment token. Waiting for login...
             </div>
-            <!-- REMOVED: Google Sign-In button -->
         </div>
 
         <!-- Logged In Section (Conditional content based on approval) -->
