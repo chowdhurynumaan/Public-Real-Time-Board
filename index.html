@@ -24,7 +24,7 @@
     <!-- Firebase SDKs -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        // *** IMPORTANT CHANGE: Swapping signInWithPopup for signInWithRedirect and adding getRedirectResult ***
+        // *** Imports are unchanged, but we're changing the usage flow ***
         import { getAuth, GoogleAuthProvider, signInWithRedirect, onAuthStateChanged, signInWithCustomToken, signOut, getRedirectResult } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, addDoc, onSnapshot, query, orderBy, deleteDoc, doc, updateDoc, setLogLevel, getDoc, setDoc, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
@@ -582,51 +582,65 @@
             });
         }
 
-        // --- Initialization and Auth Listener ---
 
-        let authReady = false; 
+        // --- RESTRUCTURED INITIALIZATION AND AUTH LISTENER (FIX FOR REDIRECT LOOP) ---
 
         /**
-         * Attempts to sign in with the custom token and handles redirect results.
+         * Sets up the primary Auth State Listener.
          */
-        onAuthStateChanged(auth, async (user) => {
-            // 1. Handle redirect result first (if user was sent to Google and came back)
-            try {
-                const result = await getRedirectResult(auth);
-                if (result) {
-                    console.log("Redirect sign-in successful:", result.user.displayName);
-                    // The rest of the sign-in flow is handled by the regular 'user' check below
+        function setupAuthListener() {
+            onAuthStateChanged(auth, (user) => {
+                // Main Logic: Update UI based on current user state
+                if (user) {
+                    // This handles successful sign-in from custom token, redirect, or previous session
+                    updateUI(user);
+                } else {
+                    // This handles sign-out or initial logged-out state
+                    updateUI(null);
                 }
-            } catch (error) {
-                console.error("Redirect sign-in error:", error);
-                showStatus(`Sign-in failed after redirect: ${error.code}`, 'text-red-600');
-            }
-
-            // 2. Initial Custom Token Sign-in attempt (Canvas environment)
-            if (initialAuthToken && !authReady) {
+            });
+        }
+        
+        /**
+         * Runs initial startup logic: Custom Token Auth (Canvas) and Redirect Result Check (Google).
+         */
+        async function initializeAppFlow() {
+            // 1. Initial Custom Token Sign-in attempt (Canvas environment)
+            // This runs first to try and establish a session from the canvas token.
+            if (initialAuthToken) {
                  try {
-                    // This attempt will trigger a second onAuthStateChanged call if successful
                     await signInWithCustomToken(auth, initialAuthToken);
+                    console.log("Canvas custom token sign-in successful.");
                  } catch (e) {
                     console.error("Custom token sign-in failed:", e);
                  }
             }
             
-            // 3. Main Logic: Update UI based on current user state
-            if (user) {
-                updateUI(user);
-            } else {
-                updateUI(null);
+            // 2. Handle redirect result (if the page load is a return from Google Sign-in)
+            // It MUST be called on every page load to check for a pending result.
+            try {
+                const result = await getRedirectResult(auth);
+                if (result) {
+                    // If a result exists, the user is signed in. 
+                    console.log("Redirect sign-in successful:", result.user.displayName);
+                    // The onAuthStateChanged listener will handle the UI update immediately.
+                }
+            } catch (error) {
+                console.error("Redirect sign-in error:", error);
+                showStatus(`Sign-in failed after redirect: ${error.code}. Try again.`, 'text-red-600');
             }
+            
+            // 3. Set up the main listener for all subsequent state changes
+            setupAuthListener();
+        }
 
-            // 4. Mark Auth as ready
-            authReady = true;
-        });
+        // Start the entire flow when the module script executes
+        initializeAppFlow();
 
     </script>
 </head>
 <body class="min-h-screen p-4 sm:p-8">
-
+<!-- ... (rest of HTML body is unchanged) ... -->
     <div class="max-w-4xl mx-auto">
         <header class="text-center mb-10">
             <h1 class="text-4xl font-extrabold text-gray-900 tracking-tight">Real-Time Request Manager</h1>
