@@ -212,10 +212,19 @@
             
             // Set up a listener for the standard user's *own* status changes
             unsubscribeUserStatus = onSnapshot(userDocRef, (docSnapshot) => {
-                // Ensure the document still exists (it might have been deleted by the admin path on a previous login)
+                // Ensure the document still exists
                 if (docSnapshot.exists()) {
-                    userApprovalStatus = docSnapshot.data().status;
-                    updateAppView(); // Re-render the view when status changes (e.g., when Admin approves them)
+                    const newStatus = docSnapshot.data().status;
+                    if (userApprovalStatus !== newStatus) {
+                        userApprovalStatus = newStatus;
+                        
+                        // ** CRITICAL FIX: Explicitly call listenToBoard and updateAppView 
+                        // when status changes from Pending to Approved
+                        if (userApprovalStatus === 'Approved') {
+                            listenToBoard();
+                        }
+                        updateAppView(); // Re-render the view when status changes
+                    }
                 }
             });
             
@@ -241,7 +250,12 @@
             // Show appropriate content
             if (userApprovalStatus === 'Approved') {
                 boardSection.classList.remove('hidden');
-                listenToBoard(); // Start board listener only if approved
+                // listenToBoard() is now called either in checkAndHandleUserApproval 
+                // or after the initial load, to prevent duplicate listeners
+                if (!unsubscribeBoard) {
+                   listenToBoard();
+                }
+
                 if (isUserAdmin && adminPanel) adminPanel.classList.remove('hidden');
 
             } else if (userApprovalStatus === 'Pending' || userApprovalStatus === 'Loading...') {
