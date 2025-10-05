@@ -24,7 +24,7 @@
     <!-- Firebase SDKs -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signInWithCustomToken, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, addDoc, onSnapshot, query, orderBy, deleteDoc, doc, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // IMPORTANT: Configuration is now set!
@@ -38,8 +38,8 @@
             appId: "1:954372453883:web:b2c708ef761f460725075e"
         };
 
-        // CRITICAL: Replace this with the actual UID of your Admin user.
-        const ADMIN_UID = "oNOjVCr0fBhAVNukhHxvz6uFaOm1"; // <-- REPLACE ME
+        // ADMIN UID (CONFIRMED from your last message)
+        const ADMIN_UID = "oNOj3VCr0fBhAVNukhHtkxv2s6uFaOm1";
         // ----------------------------------------------------------------
 
         // Global variables provided by the environment (use a fallback for local testing)
@@ -58,6 +58,7 @@
 
         let currentUserId = null;
         let authReady = false;
+        let unsubscribe = null; // To hold the onSnapshot listener function
 
         // --- Utility Functions ---
 
@@ -113,6 +114,25 @@
         };
 
         /**
+         * Handles Sign-Out.
+         */
+        window.signOutUser = async () => {
+            try {
+                // Stop listening to the board before signing out
+                if (unsubscribe) {
+                    unsubscribe();
+                    unsubscribe = null;
+                }
+                await signOut(auth);
+                showStatus("Signed out successfully.", 'text-gray-600');
+            } catch (error) {
+                console.error("Sign-out error:", error);
+                showStatus("Error signing out.", 'text-red-500');
+            }
+        };
+
+
+        /**
          * Handles User Interface changes based on authentication state.
          * @param {object | null} user - The Firebase user object or null if logged out.
          */
@@ -125,14 +145,25 @@
                 currentUserId = user.uid;
                 authSection.classList.add('hidden');
                 boardSection.classList.remove('hidden');
+                
+                // User display with Sign Out button
                 userDisplay.innerHTML = `
-                    <div class="text-sm font-semibold text-gray-700">Logged in as:</div>
-                    <div class="text-xl font-bold text-indigo-700">${user.displayName}</div>
-                    <div class="text-sm text-gray-500 mb-2">${user.email}</div>
+                    <div class="flex justify-between items-center">
+                        <div>
+                            <div class="text-sm font-semibold text-gray-700">Logged in as:</div>
+                            <div class="text-xl font-bold text-indigo-700">${user.displayName}</div>
+                            <div class="text-sm text-gray-500 mb-2">${user.email}</div>
+                        </div>
+                        <button onclick="signOutUser()" 
+                            class="px-4 py-2 text-sm bg-gray-100 text-gray-700 font-medium rounded-lg hover:bg-gray-200 transition duration-150 shadow-sm">
+                            Sign Out
+                        </button>
+                    </div>
                     <div class="text-xs text-gray-400 font-mono break-all mt-1 p-1 bg-gray-100 rounded-lg">
-                        UID: ${user.uid}
+                        UID: ${user.uid} ${user.uid === ADMIN_UID ? '<span class="text-sm text-red-500 font-bold ml-2">(ADMIN)</span>' : ''}
                     </div>
                 `;
+
                 // Start listening to the board only when the user is logged in
                 if (authReady) {
                     listenToBoard();
@@ -141,6 +172,10 @@
                 currentUserId = null;
                 authSection.classList.remove('hidden');
                 boardSection.classList.add('hidden');
+                
+                // Clear the board display when logged out
+                const boardContainer = document.getElementById('board-container');
+                if(boardContainer) boardContainer.innerHTML = '<p class="text-center text-gray-400 p-8">Sign in to view posts.</p>';
             }
         }
 
@@ -185,11 +220,11 @@
                 return;
             }
 
-            // Check for Admin status or self-delete permission (though self-delete is enforced by rules)
-            const canDelete = (auth.currentUser.uid === ADMIN_UID) || (auth.currentUser.uid === entryUserId);
+            // Check for Admin status (client-side check for button visibility)
+            const canDelete = (auth.currentUser.uid === ADMIN_UID); 
 
             if (!canDelete) {
-                 showStatus("Deletion denied. Only the Admin or the entry's author can delete this.", 'text-red-500');
+                 showStatus("Deletion denied. Only the Admin can delete this entry.", 'text-red-500');
                  return;
             }
 
@@ -221,10 +256,9 @@
                 const isCurrentUserAdmin = currentUserId === ADMIN_UID;
                 const isCurrentUsersEntry = currentUserId === entry.userId;
                 
-                // Determine if the delete button should be visible
+                // Determine if the delete button should be visible (only visible to Admin)
                 const showDeleteButton = isCurrentUserAdmin; 
                 
-                // Only the Admin (as per app logic) gets the delete button displayed
                 const deleteButtonHtml = showDeleteButton ? `
                     <button onclick="deleteEntry('${entry.id}', '${entry.userId}')" 
                             class="ml-4 p-2 text-xs bg-red-100 text-red-600 hover:bg-red-200 rounded-full transition duration-150">
@@ -262,11 +296,16 @@
          * Sets up the real-time listener for the public board.
          */
         function listenToBoard() {
+            // If we are already listening, stop the old listener
+            if (unsubscribe) {
+                unsubscribe();
+            }
+
             // Query: order by timestamp descending for latest first
             const q = query(collection(db, BOARD_PATH), orderBy("timestamp", "desc"));
 
             // Real-time listener
-            onSnapshot(q, (snapshot) => {
+            unsubscribe = onSnapshot(q, (snapshot) => {
                 const entries = [];
                 snapshot.forEach((doc) => {
                     entries.push({ id: doc.id, ...doc.data() });
@@ -274,7 +313,7 @@
                 renderBoard(entries);
             }, (error) => {
                 console.error("Error fetching board data: ", error);
-                showStatus("Failed to load real-time data.", 'text-red-500');
+                showStatus("Failed to load real-time data. Check console and security rules.", 'text-red-500');
             });
         }
 
@@ -331,7 +370,7 @@
             <!-- User Info and Post Form -->
             <div class="bg-white p-6 rounded-xl shadow-xl mb-8">
                 <div id="user-display" class="mb-4 pb-4 border-b border-gray-100">
-                    <!-- User details will be injected here -->
+                    <!-- User details and Sign Out button will be injected here -->
                 </div>
 
                 <form onsubmit="submitEntry(event)" class="space-y-4">
